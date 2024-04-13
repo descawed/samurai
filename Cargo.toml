@@ -1,0 +1,13 @@
+[package]
+name = "samurai"
+version = "0.1.0"
+authors = ["descawed <samurai@descawed.com>"]
+edition = "2021"
+description = "Tools for working with the files of the game (Way of the) Samurai"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+anyhow = "~1.0.82"
+binrw = "~0.13.3"
+clap = "~4.5.4"
