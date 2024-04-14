@@ -2,7 +2,9 @@ use std::collections::HashMap;
 use std::io::{Read, Seek, SeekFrom, Write};
 
 use anyhow::{anyhow, Result};
-use binrw::{BinRead, binrw, BinWrite, BinWriterExt, NullString};
+use binrw::{binrw, BinRead, BinWrite, BinWriterExt, NullString};
+
+use super::Validated;
 
 /// The default maximum number of objects a volume can hold.
 pub const DEFAULT_MAX_OBJECTS: u32 = 4000;
@@ -53,42 +55,114 @@ struct VolumeHeader {
 pub struct Volume {
     max_objects: u32,
     objects: HashMap<String, Vec<u8>>,
+    hashes: HashMap<u32, String>,
 }
 
 impl Volume {
     /// Create a new, empty volume that can hold up to the given number of objects
+    ///
+    /// # Arguments
+    ///
+    /// * `max_objects` - The maximum number of objects to reserve space for in the volume's header.
+    ///
+    /// # Returns
+    ///
+    /// An empty volume
     pub fn new(max_objects: u32) -> Self {
         Self {
             max_objects,
             objects: HashMap::new(),
+            hashes: HashMap::new(),
         }
     }
 
-    /// Read a volume from a binary data stream
-    pub fn read<F: Read + Seek>(mut source: F) -> Result<Self> {
+    /// Get the current maximum number of objects for this volume
+    pub fn max_objects(&self) -> u32 {
+        self.max_objects
+    }
+
+    /// Set the maximum number of objects for this volume
+    ///
+    /// # Errors
+    ///
+    /// Returns an error of the number of objects currently in the volume exceeds the requested maximum.
+    pub fn set_max_objects(&mut self, max_objects: u32) -> Result<()> {
+        if self.objects.len() > max_objects as usize {
+            return Err(anyhow!(
+                "Volume already contains more than {} objects",
+                max_objects
+            ));
+        }
+        self.max_objects = max_objects;
+        Ok(())
+    }
+
+    /// Read a volume from a binary data stream while validating its contents
+    ///
+    /// # Arguments
+    ///
+    /// * `source` - The binary data stream to read the volume from
+    ///
+    /// # Returns
+    ///
+    /// A Validated<Volume> containing the volume and any validation warnings that were encountered.
+    pub fn read_with_validation<F: Read + Seek>(mut source: F) -> Result<Validated<Self>> {
+        let mut warnings = vec![];
+
         let header = VolumeHeader::read(&mut source)?;
-        let mut objects = HashMap::with_capacity(header.descriptors.len());
-        for descriptor in &header.descriptors {
+        let num_objects = header.descriptors.len();
+        if num_objects > header.max_objects as usize {
+            warnings.push(format!(
+                "Volume contains more than the maximum number of objects: max {}, actual {}",
+                header.max_objects, num_objects
+            ));
+        }
+
+        let mut objects = HashMap::with_capacity(num_objects);
+        let mut hashes = HashMap::with_capacity(num_objects);
+        for (i, descriptor) in header.descriptors.iter().enumerate() {
             source.seek(SeekFrom::Start(
                 (header.header_size + descriptor.start) as u64,
             ))?;
             let mut data = vec![0u8; descriptor.size as usize];
             source.read_exact(&mut data)?;
-            let name = NullString::read(&mut source)?;
-            objects.insert(name.to_string(), data);
-            // TODO: remove once debugging complete
-            if descriptor.unknown != 0 {
-                println!(
-                    "{} (hash {:08X}) has non-zero unknown value {}",
-                    name, descriptor.hash, descriptor.unknown
-                );
+            let name = NullString::read(&mut source)?.to_string();
+
+            let hash = hash_name(name.as_bytes());
+            if hash != descriptor.hash {
+                warnings.push(format!(
+                    "{} (index {}) hash looks wrong: expected {:08X}, actual {:08X}",
+                    name, i, hash, descriptor.hash
+                ));
             }
+
+            if descriptor.unknown != 0 {
+                warnings.push(format!(
+                    "{} (index {}, hash {:08X}) has non-zero unknown value: {}",
+                    name, i, hash, descriptor.unknown
+                ));
+            }
+            objects.insert(name.clone(), data);
+            hashes.insert(hash, name);
         }
 
-        Ok(Self {
-            max_objects: header.max_objects,
-            objects,
+        Ok(Validated {
+            object: Self {
+                max_objects: header.max_objects,
+                objects,
+                hashes,
+            },
+            warnings,
         })
+    }
+
+    /// Read a volume from a binary data stream
+    ///
+    /// # Arguments
+    ///
+    /// * `source` - The binary data stream to read the volume from
+    pub fn read<F: Read + Seek>(source: F) -> Result<Self> {
+        Self::read_with_validation(source).map(|v| v.object)
     }
 
     /// Write this volume to a binary data stream
@@ -101,7 +175,6 @@ impl Volume {
             ));
         }
 
-        let mut hashes = HashMap::with_capacity(self.objects.len());
         let mut header = VolumeHeader {
             max_objects: self.max_objects,
             header_size: round8(self.max_objects * DESCRIPTOR_SIZE + HEADER_SIZE),
@@ -113,18 +186,8 @@ impl Volume {
         let mut start = 0usize;
         for (name, data) in &self.objects {
             let hash = hash_name(name.as_bytes());
-            if hashes.contains_key(&hash) {
-                return Err(anyhow!(
-                    "Hash collision: hash {:08X}, first name {}, second name {}",
-                    hash,
-                    hashes[&hash],
-                    name
-                ));
-            }
-            hashes.insert(hash, name.clone());
-
-            sink.write(data)?;
-            sink.write(name.as_bytes())?;
+            sink.write_all(data)?;
+            sink.write_all(name.as_bytes())?;
             sink.write_be(&0u8)?;
             let end = start + data.len();
             let object_end = end + name.len() + 1;
@@ -144,7 +207,7 @@ impl Volume {
 
         // go back and finish up the header
         header.descriptors.sort_by_key(|d| d.hash); // descriptors must be sorted by hash because the game finds entries by binary search
-        let file_size = sink.seek(SeekFrom::Current(0))?;
+        let file_size = sink.stream_position()?;
         header.file_size = (file_size & !0xFFF) as u32; // FIXME: is this right?
         sink.seek(SeekFrom::Start(0))?;
         header.write(&mut sink)?;
@@ -155,6 +218,14 @@ impl Volume {
     /// Get the data for the object with the given name if the object exists.
     pub fn get(&self, name: &str) -> Option<&[u8]> {
         self.objects.get(name).map(Vec::as_slice)
+    }
+
+    /// Get the data for the object with the given hash if the object exists.
+    pub fn get_by_hash(&self, hash: u32) -> Option<&[u8]> {
+        self.hashes
+            .get(&hash)
+            .and_then(|name| self.objects.get(name))
+            .map(Vec::as_slice)
     }
 
     /// Iterate over the objects in the volume along with their names
@@ -168,18 +239,60 @@ impl Volume {
     }
 
     /// Add or replace an object in the volume with the given name.
-    pub fn add(&mut self, name: String, data: Vec<u8>) {
-        self.objects.insert(name, data);
+    pub fn add(&mut self, name: String, data: Vec<u8>) -> Result<u32> {
+        if self.objects.len() >= self.max_objects as usize {
+            return Err(anyhow!(
+                "The volume is full (maximum number of objects {})",
+                self.max_objects
+            ));
+        }
+
+        let hash = hash_name(name.as_bytes());
+        if let Some(other_name) = self.hashes.get(&hash) {
+            return Err(anyhow!(
+                "Hash collision: hash {:08X} already used by {}",
+                hash,
+                other_name
+            ));
+        }
+        self.objects.insert(name.clone(), data);
+        self.hashes.insert(hash, name);
+        Ok(hash)
     }
 
     /// Remove the object with the given name from the volume.
-    pub fn remove(&mut self, name: &str) {
-        self.objects.remove(name);
+    ///
+    /// # Returns
+    ///
+    /// Whether an object was removed
+    pub fn remove(&mut self, name: &str) -> bool {
+        let hash = hash_name(name.as_bytes());
+        self.hashes.remove(&hash);
+        self.objects.remove(name).is_some()
+    }
+
+    /// Remove the object with the given hash from the volume
+    ///
+    /// # Returns
+    ///
+    /// Whether an object was removed
+    pub fn remove_by_hash(&mut self, hash: u32) -> bool {
+        if let Some(name) = self.hashes.remove(&hash) {
+            self.objects.remove(&name);
+            true
+        } else {
+            false
+        }
     }
 
     /// Does this volume contain an object with the given name?
     pub fn has(&self, name: &str) -> bool {
         self.objects.contains_key(name)
+    }
+
+    /// Does this volume contain an object with the given hash?
+    pub fn has_hash(&self, hash: u32) -> bool {
+        self.hashes.contains_key(&hash)
     }
 }
 
