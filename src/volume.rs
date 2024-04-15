@@ -4,7 +4,7 @@ use std::io::{Read, Seek, SeekFrom, Write};
 use anyhow::{anyhow, Result};
 use binrw::{binrw, BinRead, BinWrite, BinWriterExt, NullString};
 
-use super::Validated;
+use super::{Readable, Validated};
 
 /// The default maximum number of objects a volume can hold.
 pub const DEFAULT_MAX_OBJECTS: u32 = 4000;
@@ -95,74 +95,6 @@ impl Volume {
         }
         self.max_objects = max_objects;
         Ok(())
-    }
-
-    /// Read a volume from a binary data stream while validating its contents
-    ///
-    /// # Arguments
-    ///
-    /// * `source` - The binary data stream to read the volume from
-    ///
-    /// # Returns
-    ///
-    /// A Validated<Volume> containing the volume and any validation warnings that were encountered.
-    pub fn read_with_validation<F: Read + Seek>(mut source: F) -> Result<Validated<Self>> {
-        let mut warnings = vec![];
-
-        let header = VolumeHeader::read(&mut source)?;
-        let num_objects = header.descriptors.len();
-        if num_objects > header.max_objects as usize {
-            warnings.push(format!(
-                "Volume contains more than the maximum number of objects: max {}, actual {}",
-                header.max_objects, num_objects
-            ));
-        }
-
-        let mut objects = HashMap::with_capacity(num_objects);
-        let mut hashes = HashMap::with_capacity(num_objects);
-        for (i, descriptor) in header.descriptors.iter().enumerate() {
-            source.seek(SeekFrom::Start(
-                (header.header_size + descriptor.start) as u64,
-            ))?;
-            let mut data = vec![0u8; descriptor.size as usize];
-            source.read_exact(&mut data)?;
-            let name = NullString::read(&mut source)?.to_string();
-
-            let hash = hash_name(name.as_bytes());
-            if hash != descriptor.hash {
-                warnings.push(format!(
-                    "{} (index {}) hash looks wrong: expected {:08X}, actual {:08X}",
-                    name, i, hash, descriptor.hash
-                ));
-            }
-
-            if descriptor.unknown != 0 {
-                warnings.push(format!(
-                    "{} (index {}, hash {:08X}) has non-zero unknown value: {}",
-                    name, i, hash, descriptor.unknown
-                ));
-            }
-            objects.insert(name.clone(), data);
-            hashes.insert(hash, name);
-        }
-
-        Ok(Validated {
-            object: Self {
-                max_objects: header.max_objects,
-                objects,
-                hashes,
-            },
-            warnings,
-        })
-    }
-
-    /// Read a volume from a binary data stream
-    ///
-    /// # Arguments
-    ///
-    /// * `source` - The binary data stream to read the volume from
-    pub fn read<F: Read + Seek>(source: F) -> Result<Self> {
-        Self::read_with_validation(source).map(|v| v.object)
     }
 
     /// Write this volume to a binary data stream
@@ -293,6 +225,67 @@ impl Volume {
     /// Does this volume contain an object with the given hash?
     pub fn has_hash(&self, hash: u32) -> bool {
         self.hashes.contains_key(&hash)
+    }
+}
+
+impl Readable for Volume {
+    /// Read a volume from a binary data stream while validating its contents
+    ///
+    /// # Arguments
+    ///
+    /// * `source` - The binary data stream to read the volume from
+    ///
+    /// # Returns
+    ///
+    /// A Validated<Volume> containing the volume and any validation warnings that were encountered.
+    fn read<F: Read + Seek>(mut source: F) -> Result<Validated<Self>> {
+        let mut warnings = vec![];
+
+        let header = VolumeHeader::read(&mut source)?;
+        let num_objects = header.descriptors.len();
+        if num_objects > header.max_objects as usize {
+            warnings.push(format!(
+                "Volume contains more than the maximum number of objects: max {}, actual {}",
+                header.max_objects, num_objects
+            ));
+        }
+
+        let mut objects = HashMap::with_capacity(num_objects);
+        let mut hashes = HashMap::with_capacity(num_objects);
+        for (i, descriptor) in header.descriptors.iter().enumerate() {
+            source.seek(SeekFrom::Start(
+                (header.header_size + descriptor.start) as u64,
+            ))?;
+            let mut data = vec![0u8; descriptor.size as usize];
+            source.read_exact(&mut data)?;
+            let name = NullString::read(&mut source)?.to_string();
+
+            let hash = hash_name(name.as_bytes());
+            if hash != descriptor.hash {
+                warnings.push(format!(
+                    "{} (index {}) hash looks wrong: expected {:08X}, actual {:08X}",
+                    name, i, hash, descriptor.hash
+                ));
+            }
+
+            if descriptor.unknown != 0 {
+                warnings.push(format!(
+                    "{} (index {}, hash {:08X}) has non-zero unknown value: {}",
+                    name, i, hash, descriptor.unknown
+                ));
+            }
+            objects.insert(name.clone(), data);
+            hashes.insert(hash, name);
+        }
+
+        Ok(Validated {
+            object: Self {
+                max_objects: header.max_objects,
+                objects,
+                hashes,
+            },
+            warnings,
+        })
     }
 }
 

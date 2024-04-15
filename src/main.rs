@@ -1,6 +1,6 @@
 use std::fs;
 use std::fs::File;
-use std::io::{BufReader, BufWriter, Write};
+use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
 use std::process;
 
@@ -8,9 +8,9 @@ use anyhow::{anyhow, Result};
 use clap::{arg, Arg, ArgAction, Command};
 use walkdir::WalkDir;
 
-use samurai::load_volume;
-use samurai::script;
+use samurai::texture::PictureImageFile;
 use samurai::volume::{Volume, DEFAULT_MAX_OBJECTS};
+use samurai::{script, Readable};
 
 fn cli() -> Command {
     Command::new("samurai")
@@ -145,10 +145,49 @@ fn cli() -> Command {
                         ),
                 ),
         )
+        .subcommand(
+            Command::new("texture")
+                .about("Convert textures to other formats")
+                .subcommand_required(true)
+                .subcommand(
+                    Command::new("list")
+                        .about("List stats and contents of a texture")
+                        .arg(
+                            arg!(<TEXTURE> "Path to texture file")
+                                .value_parser(clap::value_parser!(PathBuf))
+                        )
+                )
+                .subcommand(
+                    Command::new("export")
+                        .about("Export a texture image to another format")
+                        .arg(
+                            Arg::new("index")
+                                .short('i')
+                                .long("image")
+                                .help("An index of an image in the texture to extract. Zero-based. May be specified multiple times.")
+                                .value_parser(clap::value_parser!(usize))
+                        )
+                        .arg(
+                            Arg::new("clut")
+                                .short('c')
+                                .long("clut")
+                                .help("An index of a CLUT to use when exporting the image. Zero-based. May be specified multiple times.")
+                                .value_parser(clap::value_parser!(usize))
+                        )
+                        .arg(
+                            arg!(<TEXTURE> "Path to texture file")
+                                .value_parser(clap::value_parser!(PathBuf))
+                        )
+                        .arg(
+                            arg!(<OUTPUT> "Path to export location. Must be a directory unless exporting a single image with a single (or no) CLUT.")
+                                .value_parser(clap::value_parser!(PathBuf))
+                        )
+                )
+        )
 }
 
 fn list_volume(path: &Path) -> Result<()> {
-    let volume = load_volume(path)?;
+    let volume = Volume::load(path)?;
     let mut names: Vec<_> = volume.iter().map(|(n, _)| n).collect();
     names.sort();
 
@@ -160,9 +199,7 @@ fn list_volume(path: &Path) -> Result<()> {
 }
 
 fn validate_volume(path: &Path, quiet: bool) -> Result<()> {
-    let file = File::open(path)?;
-    let reader = BufReader::new(file);
-    let warnings = Volume::read_with_validation(reader)?.warnings;
+    let warnings = Volume::load(path)?.warnings;
     if warnings.is_empty() {
         if !quiet {
             println!("Validation successful");
@@ -193,7 +230,7 @@ fn unpack_volume<S: AsRef<str>>(
         fs::create_dir(extract_path)?;
     }
 
-    let volume = load_volume(volume_path)?;
+    let volume = Volume::load(volume_path)?;
     for (name, data) in volume.iter() {
         if let Some(prefix_list) = prefixes {
             let mut matched = false;
@@ -332,6 +369,15 @@ fn unformat_script(script_path: &Path, output_path: Option<&Path>) -> Result<()>
     Ok(())
 }
 
+fn list_texture(path: &Path) -> Result<()> {
+    let images = PictureImageFile::load(path)?;
+    for (i, image) in images.iter().enumerate() {
+        println!("{}: {}", i, image);
+    }
+
+    Ok(())
+}
+
 fn main() -> Result<()> {
     let matches = cli().get_matches();
 
@@ -430,6 +476,17 @@ fn main() -> Result<()> {
                 let output_path = unformat_matches.get_one::<PathBuf>("OUTPUT");
                 unformat_script(script_path, output_path.map(PathBuf::as_path))?;
             }
+            _ => unreachable!(),
+        },
+        Some(("texture", sub_matches)) => match sub_matches.subcommand() {
+            Some(("list", list_matches)) => {
+                let texture_path = list_matches
+                    .get_one::<PathBuf>("TEXTURE")
+                    .expect("Texture path is required");
+
+                list_texture(texture_path.as_path())?;
+            }
+            Some(("export", export_matches)) => {}
             _ => unreachable!(),
         },
         _ => unreachable!(),
