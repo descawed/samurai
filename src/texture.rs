@@ -9,11 +9,40 @@ use anyhow::{anyhow, Result};
 use binrw::{binrw, BinRead};
 use image::{imageops, DynamicImage, RgbaImage};
 
+// for even rows; swap every 4 indexes for odd
+const PSMT8_MAP: [usize; 64] = [
+    0, 4, 8, 12, 16, 20, 24, 28, //
+    2, 6, 10, 14, 18, 22, 26, 30, //
+    32, 36, 40, 44, 48, 52, 56, 60, //
+    34, 38, 42, 46, 50, 54, 58, 62, //
+    17, 21, 25, 29, 1, 5, 9, 13, //
+    19, 23, 27, 31, 3, 7, 11, 15, //
+    49, 53, 57, 61, 33, 37, 41, 45, //
+    51, 55, 59, 63, 35, 39, 43, 47, //
+];
+const BLOCK_ROWS: usize = 4;
+const BLOCK_COLUMNS: usize = 32;
+const BLOCK_ROWS_HALF: usize = BLOCK_ROWS / 2;
+
 const fn scale_alpha(alpha: u8) -> u8 {
     if alpha > 128 {
         255
     } else {
         ((alpha as u16 * 255) / 128) as u8
+    }
+}
+
+fn swizzle_clut<T>(data: &mut [T], elem_size: usize) {
+    let row = 8 * elem_size;
+    let block = 2 * row;
+    let step = 2 * block;
+    for i in (row..data.len()).step_by(step) {
+        let end = i + block;
+        if end > data.len() {
+            break;
+        }
+
+        data[i..end].rotate_right(row);
     }
 }
 
@@ -97,11 +126,9 @@ impl PixelStorageMode {
     pub fn num_index_bytes(&self, width: usize, height: usize) -> usize {
         let area = width * height;
         match self {
-            PixelStorageMode::PSMT8 => area,
-            PixelStorageMode::PSMT4 => area.div_ceil(2),
-            // FIXME: is it right that we only get one index per word with the PSMT4 formats?
-            PixelStorageMode::PSMT8H | PixelStorageMode::PSMT4HL | PixelStorageMode::PSMT4HH => {
-                area * 4
+            PixelStorageMode::PSMT8 | PixelStorageMode::PSMT8H => area,
+            PixelStorageMode::PSMT4 | PixelStorageMode::PSMT4HL | PixelStorageMode::PSMT4HH => {
+                area.div_ceil(2)
             }
             _ => 0,
         }
@@ -134,8 +161,9 @@ impl PixelStorageMode {
                 .chunks_exact(4)
                 .flat_map(|p| [p[0], p[1], p[2], scale_alpha(p[3])])
                 .collect()),
+            // FIXME: fix handling of alpha for the below two modes
             PixelStorageMode::PSMCT24 => Ok(data
-                .chunks_exact(4)
+                .chunks_exact(3)
                 .flat_map(|p| [p[0], p[1], p[2], 255])
                 .collect()),
             PixelStorageMode::PSMCT16 => Ok(data
@@ -158,16 +186,60 @@ impl PixelStorageMode {
         }
     }
 
-    pub fn read_indexes(&self, data: &[u8]) -> Result<Vec<usize>> {
-        let iter = data.iter();
+    pub fn read_indexes(&self, data: &[u8], width: usize, height: usize) -> Result<Vec<usize>> {
         match self {
-            PixelStorageMode::PSMT8 => Ok(iter.map(|b| *b as usize).collect()),
-            PixelStorageMode::PSMT8H => Ok(iter.step_by(4).map(|b| *b as usize).collect()),
-            PixelStorageMode::PSMT4 => Ok(iter
-                .flat_map(|b| [(*b & 0xf) as usize, (*b >> 4) as usize])
-                .collect()),
-            PixelStorageMode::PSMT4HL => Ok(iter.step_by(4).map(|b| (*b & 0xf) as usize).collect()),
-            PixelStorageMode::PSMT4HH => Ok(iter.step_by(4).map(|b| (*b >> 4) as usize).collect()),
+            PixelStorageMode::PSMT8 | PixelStorageMode::PSMT8H => {
+                let area = width * height;
+                let mut out = vec![0usize; area];
+                // unswizzle
+                // I don't actually fully understand how this works. it starts with section 8.6.2
+                // in the GS User's Manual, which is where I got PSMT8_MAP from, but there's another
+                // transformation on top of that, because what should be the second row of pixels
+                // according to that document is two rows below the first instead of one. I also
+                // don't understand why we use 32x4 blocks, because in section 8.1 where it talks
+                // about how pixels are arranged into blocks and columns, neither PSMT8 nor PSMCT32
+                // look like they use 32x4 pixel blocks or 32x4 byte blocks.
+                let block_row_size = width * BLOCK_ROWS;
+                let half_block_row_size = width * BLOCK_ROWS_HALF;
+                for (i, b) in out.iter_mut().enumerate() {
+                    let y = i / width;
+                    let block_y = y / BLOCK_ROWS;
+                    let block_start_index = block_y * block_row_size;
+                    let y_in_block = y % BLOCK_ROWS;
+                    let y_in_half_block = y % BLOCK_ROWS_HALF;
+                    let block_x = (i % width) / BLOCK_COLUMNS;
+
+                    // according to 8.6.2, we're converting a 16x4 "column" of PSMT8 data to an 8x2
+                    // column of PSMCT32 data (64 bytes). for some reason (a second transformation?),
+                    // the first rows of all output columns form the first TWO rows of pixels in the
+                    // block, and the second rows of all output columns form the second two rows of
+                    // the block. so we skip the second output row for the first two input rows,
+                    // then circle back and fill in the second output for the next two input rows.
+                    let mut map_index = i % BLOCK_COLUMNS;
+                    if y_in_block >= BLOCK_ROWS_HALF {
+                        map_index += BLOCK_COLUMNS;
+                    }
+                    if block_y & 1 != 0 {
+                        // odd rows use an altered mapping where the first and second half of each
+                        // group of 8 are swapped
+                        map_index ^= 4;
+                    }
+
+                    let in_index = PSMT8_MAP[map_index]
+                        + block_x * PSMT8_MAP.len()
+                        + y_in_half_block * half_block_row_size
+                        + block_start_index;
+                    *b = data[in_index] as usize;
+                }
+
+                Ok(out)
+            }
+            PixelStorageMode::PSMT4 | PixelStorageMode::PSMT4HL | PixelStorageMode::PSMT4HH => {
+                Ok(data
+                    .iter()
+                    .flat_map(|b| [(*b & 0xf) as usize, (*b >> 4) as usize])
+                    .collect())
+            }
             _ => Err(anyhow!(
                 "Pixel storage mode {:?} is invalid for indexes",
                 self
@@ -208,7 +280,7 @@ impl ImageDescriptor {
 
     pub fn calc_image_block_length(&self) -> usize {
         self.pixel_type
-            .num_image_bytes(self.width as usize, self.height as usize)
+            .num_image_bytes(self.pixel_width(), self.pixel_height())
     }
 
     pub fn has_transparency(&self) -> bool {
@@ -230,6 +302,30 @@ impl ImageDescriptor {
         } else {
             self.pixel_type
         }
+    }
+
+    pub fn pixel_width(&self) -> usize {
+        // FIXME: need this for other modes?
+        (if matches!(
+            self.pixel_type,
+            PixelStorageMode::PSMT8 | PixelStorageMode::PSMT8H
+        ) {
+            self.width * 2
+        } else {
+            self.width
+        }) as usize
+    }
+
+    pub fn pixel_height(&self) -> usize {
+        // FIXME: need this for other modes?
+        (if matches!(
+            self.pixel_type,
+            PixelStorageMode::PSMT8 | PixelStorageMode::PSMT8H
+        ) {
+            self.height * 2
+        } else {
+            self.height
+        }) as usize
     }
 }
 
@@ -272,7 +368,7 @@ impl PictureImage {
         }
 
         let num_cluts = descriptor.num_cluts as usize;
-        let mut cluts = Vec::with_capacity(num_cluts);
+        let mut cluts: Vec<Vec<_>> = Vec::with_capacity(num_cluts);
         let image_data = if descriptor.has_clut() {
             let clut_pixels = match descriptor.clut_pixel_type.read_pixels(clut) {
                 Ok(result) => result,
@@ -301,13 +397,24 @@ impl PictureImage {
                 ));
             }
 
-            ImageData::Indexes(match descriptor.pixel_type.read_indexes(image) {
-                Ok(indexes) => indexes,
-                Err(e) => {
-                    warnings.push(format!("Error reading indexes: {}", e));
-                    vec![]
-                }
-            })
+            // swizzle
+            for clut in &mut cluts {
+                swizzle_clut(clut, 1);
+            }
+
+            ImageData::Indexes(
+                match descriptor.pixel_type.read_indexes(
+                    image,
+                    descriptor.pixel_width(),
+                    descriptor.pixel_height(),
+                ) {
+                    Ok(indexes) => indexes,
+                    Err(e) => {
+                        warnings.push(format!("Error reading indexes: {}", e));
+                        vec![]
+                    }
+                },
+            )
         } else {
             ImageData::Pixels(match descriptor.pixel_type.read_pixels(image) {
                 Ok(pixels) => pixels,
@@ -336,14 +443,22 @@ impl PictureImage {
         self.cluts.len()
     }
 
+    pub fn num_variants(&self) -> usize {
+        if self.num_cluts() == 0 {
+            1
+        } else {
+            self.num_cluts()
+        }
+    }
+
     pub fn to_image_all_cluts(&self, stack: StackDirection) -> DynamicImage {
         let num_cluts = self.cluts.len();
         if num_cluts == 0 {
             return self.to_image();
         }
 
-        let base_width = self.descriptor.width as usize;
-        let base_height = self.descriptor.height as usize;
+        let base_width = self.descriptor.pixel_width();
+        let base_height = self.descriptor.pixel_height();
         let (width, height) = stack.size(base_width, base_height, num_cluts);
         let mut image = DynamicImage::new_rgba8(width as u32, height as u32);
         for i in 0..num_cluts {
@@ -360,8 +475,8 @@ impl PictureImage {
         let pixels = self.image.get_pixels(clut);
         DynamicImage::ImageRgba8(
             RgbaImage::from_raw(
-                self.descriptor.width as u32,
-                self.descriptor.height as u32,
+                self.descriptor.pixel_width() as u32,
+                self.descriptor.pixel_height() as u32,
                 pixels.into_owned(),
             )
             .unwrap(),
@@ -383,8 +498,8 @@ impl fmt::Display for PictureImage {
             f,
             "Pixel type {:?}, {}x{}, {} CLUTs",
             self.descriptor.pixel_type(),
-            self.descriptor.width,
-            self.descriptor.height,
+            self.descriptor.pixel_width(),
+            self.descriptor.pixel_height(),
             self.cluts.len(),
         )
     }
@@ -400,12 +515,25 @@ impl PictureImageFile {
         self.images.len()
     }
 
+    pub fn num_variants(&self) -> usize {
+        self.images.iter().map(|i| i.num_variants()).sum()
+    }
+
     pub fn get(&self, index: usize) -> Option<&Validated<PictureImage>> {
         self.images.get(index)
     }
 
     pub fn iter(&self) -> impl Iterator<Item = &Validated<PictureImage>> {
         self.images.iter()
+    }
+}
+
+impl IntoIterator for PictureImageFile {
+    type Item = Validated<PictureImage>;
+    type IntoIter = <Vec<Validated<PictureImage>> as IntoIterator>::IntoIter;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.images.into_iter()
     }
 }
 

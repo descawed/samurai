@@ -8,7 +8,7 @@ use anyhow::{anyhow, Result};
 use clap::{arg, Arg, ArgAction, Command};
 use walkdir::WalkDir;
 
-use samurai::texture::PictureImageFile;
+use samurai::texture::{PictureImageFile, StackDirection};
 use samurai::volume::{Volume, DEFAULT_MAX_OBJECTS};
 use samurai::{script, Readable};
 
@@ -173,6 +173,21 @@ fn cli() -> Command {
                                 .long("clut")
                                 .help("An index of a CLUT to use when exporting the image. Zero-based. May be specified multiple times.")
                                 .value_parser(clap::value_parser!(usize))
+                        )
+                        .arg(
+                            Arg::new("format")
+                                .short('f')
+                                .long("format")
+                                .help("The image format (file extension) to export to. Defaults to png. If exporting a single image, the file extension in the export path will override this.")
+                                .default_value("png")
+                        )
+                        .arg(
+                            Arg::new("stack")
+                                .short('s')
+                                .long("stack-cluts")
+                                .help("Stack all CLUTs into one export image either horizontally or vertically")
+                                .value_parser(["h", "horizontal", "v", "vertical"])
+                                .conflicts_with("clut")
                         )
                         .arg(
                             arg!(<TEXTURE> "Path to texture file")
@@ -378,6 +393,69 @@ fn list_texture(path: &Path) -> Result<()> {
     Ok(())
 }
 
+fn export_texture(
+    texture_path: &Path,
+    output_path: &Path,
+    format: &str,
+    indexes: Vec<usize>,
+    cluts: Vec<usize>,
+    stack_direction: Option<StackDirection>,
+) -> Result<()> {
+    let images = PictureImageFile::load(texture_path)?.object;
+    let is_single_image = images.num_variants() == 1
+        || (indexes.len() == 1
+            && (cluts.len() == 1
+                || stack_direction.is_some()
+                || images.get(indexes[0]).map_or(true, |i| i.num_cluts() <= 1)));
+
+    if !is_single_image && output_path.exists() && !output_path.is_dir() {
+        return Err(anyhow!(
+            "Output path {} must be a directory when exporting more than one image",
+            output_path.display()
+        ));
+    }
+
+    let filename = texture_path.file_name().unwrap().to_string_lossy();
+    for (i, picture) in images.into_iter().enumerate() {
+        if !indexes.is_empty() && !indexes.contains(&i) {
+            continue;
+        }
+
+        let picture = match picture.ok() {
+            Ok(picture) => picture,
+            Err(e) => {
+                eprintln!("Could not export image {}: {}", i, e);
+                continue;
+            }
+        };
+
+        let num_cluts = if stack_direction.is_some() {
+            1
+        } else {
+            picture.num_variants()
+        };
+        for j in 0..num_cluts {
+            if !cluts.is_empty() && !cluts.contains(&j) {
+                continue;
+            }
+
+            let image = match stack_direction {
+                Some(dir) => picture.to_image_all_cluts(dir),
+                None => picture.to_image_with_clut(j),
+            };
+            if is_single_image && !output_path.is_dir() {
+                image.save(output_path)?;
+                return Ok(());
+            }
+
+            let image_path = output_path.join(format!("{}_{}_{}.{}", filename, i, j, format,));
+            image.save(image_path)?;
+        }
+    }
+
+    Ok(())
+}
+
 fn main() -> Result<()> {
     let matches = cli().get_matches();
 
@@ -486,7 +564,38 @@ fn main() -> Result<()> {
 
                 list_texture(texture_path.as_path())?;
             }
-            Some(("export", export_matches)) => {}
+            Some(("export", export_matches)) => {
+                let texture_path = export_matches
+                    .get_one::<PathBuf>("TEXTURE")
+                    .expect("Texture path is required");
+
+                let output_path = export_matches
+                    .get_one::<PathBuf>("OUTPUT")
+                    .expect("Output path is required");
+
+                let indexes = match export_matches.get_many::<usize>("index") {
+                    Some(indexes) => indexes.copied().collect(),
+                    None => vec![],
+                };
+
+                let cluts = match export_matches.get_many::<usize>("clut") {
+                    Some(cluts) => cluts.copied().collect(),
+                    None => vec![],
+                };
+
+                let format = export_matches.get_one::<String>("format").unwrap();
+
+                let stack =
+                    export_matches
+                        .get_one::<String>("stack")
+                        .and_then(|s| match s.as_str() {
+                            "h" | "horizontal" => Some(StackDirection::Horizontal),
+                            "v" | "vertical" => Some(StackDirection::Vertical),
+                            _ => None,
+                        });
+
+                export_texture(texture_path, output_path, format, indexes, cluts, stack)?;
+            }
             _ => unreachable!(),
         },
         _ => unreachable!(),
