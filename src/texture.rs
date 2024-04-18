@@ -20,9 +20,10 @@ const PSMT8_MAP: [usize; 64] = [
     49, 53, 57, 61, 33, 37, 41, 45, //
     51, 55, 59, 63, 35, 39, 43, 47, //
 ];
-const BLOCK_ROWS: usize = 4;
-const BLOCK_COLUMNS: usize = 32;
-const BLOCK_ROWS_HALF: usize = BLOCK_ROWS / 2;
+const PSMT8_COLUMN_WIDTH: usize = 16;
+const PSMT8_COLUMN_HEIGHT: usize = 4;
+const PSMCT32_COLUMN_WIDTH: usize = 32; // in bytes
+const PSMCT32_COLUMN_HEIGHT: usize = 2;
 
 const fn scale_alpha(alpha: u8) -> u8 {
     if alpha > 128 {
@@ -32,7 +33,7 @@ const fn scale_alpha(alpha: u8) -> u8 {
     }
 }
 
-fn swizzle_clut<T>(data: &mut [T], elem_size: usize) {
+fn swizzle<T>(data: &mut [T], elem_size: usize) {
     let row = 8 * elem_size;
     let block = 2 * row;
     let step = 2 * block;
@@ -191,46 +192,39 @@ impl PixelStorageMode {
             PixelStorageMode::PSMT8 | PixelStorageMode::PSMT8H => {
                 let area = width * height;
                 let mut out = vec![0usize; area];
-                // unswizzle
-                // I don't actually fully understand how this works. it starts with section 8.6.2
-                // in the GS User's Manual, which is where I got PSMT8_MAP from, but there's another
-                // transformation on top of that, because what should be the second row of pixels
-                // according to that document is two rows below the first instead of one. I also
-                // don't understand why we use 32x4 blocks, because in section 8.1 where it talks
-                // about how pixels are arranged into blocks and columns, neither PSMT8 nor PSMCT32
-                // look like they use 32x4 pixel blocks or 32x4 byte blocks.
-                let block_row_size = width * BLOCK_ROWS;
-                let half_block_row_size = width * BLOCK_ROWS_HALF;
+                // convert PSMCT32 back to PSMT8
+                let block_8s_per_row = width / PSMT8_COLUMN_WIDTH;
+                let block_32s_per_row = width / PSMCT32_COLUMN_WIDTH;
                 for (i, b) in out.iter_mut().enumerate() {
-                    let y = i / width;
-                    let block_y = y / BLOCK_ROWS;
-                    let block_start_index = block_y * block_row_size;
-                    let y_in_block = y % BLOCK_ROWS;
-                    let y_in_half_block = y % BLOCK_ROWS_HALF;
-                    let block_x = (i % width) / BLOCK_COLUMNS;
-
-                    // according to 8.6.2, we're converting a 16x4 "column" of PSMT8 data to an 8x2
-                    // column of PSMCT32 data (64 bytes). for some reason (a second transformation?),
-                    // the first rows of all output columns form the first TWO rows of pixels in the
-                    // block, and the second rows of all output columns form the second two rows of
-                    // the block. so we skip the second output row for the first two input rows,
-                    // then circle back and fill in the second output for the next two input rows.
-                    let mut map_index = i % BLOCK_COLUMNS;
-                    if y_in_block >= BLOCK_ROWS_HALF {
-                        map_index += BLOCK_COLUMNS;
-                    }
-                    if block_y & 1 != 0 {
-                        // odd rows use an altered mapping where the first and second half of each
-                        // group of 8 are swapped
-                        map_index ^= 4;
-                    }
-
-                    let in_index = PSMT8_MAP[map_index]
-                        + block_x * PSMT8_MAP.len()
-                        + y_in_half_block * half_block_row_size
-                        + block_start_index;
+                    let pixel_y = i / width;
+                    // coordinates of the 16x4 block containing pixel i in the output (unswizzled) image
+                    let block_8_x = (i % width) / PSMT8_COLUMN_WIDTH;
+                    let block_8_y = pixel_y / PSMT8_COLUMN_HEIGHT;
+                    // index of the block in the list of all blocks
+                    let block_index = block_8_y * block_8s_per_row + block_8_x;
+                    // decompose into coordinates of the corresponding 32-bit 8x2 (i.e.
+                    // 32x2 bytes) block in the input (swizzled) image
+                    let block_32_x = block_index % block_32s_per_row;
+                    let block_32_y = block_index / block_32s_per_row;
+                    // index of the pixel within the 16x4 block
+                    let x_in_block_8 = i % PSMT8_COLUMN_WIDTH;
+                    let y_in_block_8 = pixel_y % PSMT8_COLUMN_HEIGHT;
+                    // odd rows use an altered mapping where the first and second half of each
+                    // group of 8 are swapped
+                    let block_8_pixel =
+                        (y_in_block_8 * PSMT8_COLUMN_WIDTH + x_in_block_8) ^ ((block_8_y & 1) << 2);
+                    // index of the corresponding pixel in the 32-bit block
+                    let block_32_pixel = PSMT8_MAP[block_8_pixel];
+                    let x_in_block_32 = block_32_pixel % PSMCT32_COLUMN_WIDTH;
+                    let y_in_block_32 = block_32_pixel / PSMCT32_COLUMN_WIDTH;
+                    // absolute index of pixel in input image
+                    let in_index = (block_32_y * PSMCT32_COLUMN_HEIGHT + y_in_block_32) * width
+                        + (block_32_x * PSMCT32_COLUMN_WIDTH + x_in_block_32);
                     *b = data[in_index] as usize;
                 }
+
+                // honestly not sure why this is necessary
+                swizzle(&mut out, width / 16);
 
                 Ok(out)
             }
@@ -399,7 +393,7 @@ impl PictureImage {
 
             // swizzle
             for clut in &mut cluts {
-                swizzle_clut(clut, 1);
+                swizzle(clut, 1);
             }
 
             ImageData::Indexes(
