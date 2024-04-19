@@ -1,4 +1,5 @@
 use std::borrow::Cow;
+use std::cmp;
 use std::fmt;
 use std::fmt::Formatter;
 use std::io::{Read, Seek, SeekFrom};
@@ -9,20 +10,9 @@ use anyhow::{anyhow, Result};
 use binrw::{binrw, BinRead};
 use image::{imageops, DynamicImage, RgbaImage};
 
-// for even rows; swap every 4 indexes for odd
-const PSMT8_MAP: [usize; 64] = [
-    0, 4, 8, 12, 16, 20, 24, 28, //
-    2, 6, 10, 14, 18, 22, 26, 30, //
-    32, 36, 40, 44, 48, 52, 56, 60, //
-    34, 38, 42, 46, 50, 54, 58, 62, //
-    17, 21, 25, 29, 1, 5, 9, 13, //
-    19, 23, 27, 31, 3, 7, 11, 15, //
-    49, 53, 57, 61, 33, 37, 41, 45, //
-    51, 55, 59, 63, 35, 39, 43, 47, //
-];
-const PSMT8_COLUMN_WIDTH: usize = 16;
-const PSMT8_COLUMN_HEIGHT: usize = 4;
-const PSMCT32_COLUMN_WIDTH: usize = 32; // in bytes
+/// Width of a PSMCT32 column in pixels
+const PSMCT32_COLUMN_WIDTH: usize = 8;
+/// Height of a PSMCT32 column
 const PSMCT32_COLUMN_HEIGHT: usize = 2;
 
 const fn scale_alpha(alpha: u8) -> u8 {
@@ -33,7 +23,9 @@ const fn scale_alpha(alpha: u8) -> u8 {
     }
 }
 
-fn swizzle<T>(data: &mut [T], elem_size: usize) {
+fn interleave<T>(data: &mut [T], elem_size: usize) {
+    // TODO: I'm not super clear on why this is needed with image data. are the 8 and 2 here the
+    //  8x2 size of a PSMCT32 column? find out and update to use constants if so.
     let row = 8 * elem_size;
     let block = 2 * row;
     let step = 2 * block;
@@ -45,6 +37,97 @@ fn swizzle<T>(data: &mut [T], elem_size: usize) {
 
         data[i..end].rotate_right(row);
     }
+}
+
+/// Map an index in a WxH index column to the equivalent index in an 8x2 PSMCT32 column.
+///
+/// All units are in indexes, regardless of the number of bits an index spans. For odd-numbered
+/// columns, flip bit value 4 in the input for correct results. The input must be in the range 0..W*H.
+const fn psmt_map<const W: usize, const H: usize>(i: usize) -> usize {
+    let row_size = W * H / PSMCT32_COLUMN_HEIGHT;
+
+    let word_size = row_size / PSMCT32_COLUMN_WIDTH;
+    let word_mask = PSMCT32_COLUMN_WIDTH - 1;
+    let num_word_bits = PSMCT32_COLUMN_WIDTH.trailing_zeros() as usize;
+
+    let num_column_pairs = word_size / 2; // indexes are stored in columns in an alternating order
+    let num_column_bits = num_column_pairs.trailing_zeros() as usize; // how many bits do we need to index all the column pairs?
+    let column_pair_mask = (1usize << num_column_bits) - 1;
+
+    let row_shift = num_column_bits + num_word_bits;
+    let odd_column_shift = row_shift + 1;
+    let odd_column_group_shift = odd_column_shift - 2; // shift this bit to have value 4 to reverse groups of 4 in the odd columns
+
+    ((i ^ (4 & (i >> odd_column_group_shift))) & word_mask) * word_size // word select, swapping each group of 4 once we reach the second half of the block
+        + ((i >> num_word_bits) & column_pair_mask) * 2 // column pair select
+        + ((i >> row_shift) & 1) * row_size // row select
+        + ((i >> odd_column_shift) & 1) // odd column select
+}
+
+/// Unswizzle swizzled index data.
+///
+/// The input array should be an array of individual indexes, regardless of how the indexes were
+/// packed in the binary data.
+///
+/// # Parameters
+///
+/// * `P` - The number of indexes in one pixel of each 8x2 PSMCT32 block
+/// * `OW` - Width of an index block
+/// * `OH` - Height of an index block
+///
+/// # Arguments
+///
+/// * `input` - The swizzled indexes
+/// * `width` - Width of the image in pixels
+/// * `height` - Height of the image in pixels
+///
+/// # Returns
+///
+/// The unswizzled indexes.
+fn unswizzle<const P: usize, const OW: usize, const OH: usize, T: Into<usize> + Copy>(
+    input: &[T],
+    width: usize,
+    height: usize,
+) -> Vec<usize> {
+    // TODO: change this function to take an iterator and index into the output vec to eliminate
+    //  unnecessary intermediate buffers
+    // take the lesser of the expected area or the available data
+    let area = cmp::min(width * height, input.len());
+    let mut out = vec![0usize; area];
+    // convert PSMCT32 back to original indexed format
+    let input_width = P * PSMCT32_COLUMN_WIDTH;
+    let output_blocks_per_row = width / OW;
+    let input_blocks_per_row = width / input_width;
+    for (i, b) in out.iter_mut().enumerate() {
+        let pixel_y = i / width;
+        // coordinates of the OWxOH block containing pixel i in the output (unswizzled) image
+        let output_block_x = (i % width) / OW;
+        let output_block_y = pixel_y / OH;
+        // index of the block in the list of all blocks
+        let block_index = output_block_y * output_blocks_per_row + output_block_x;
+        // decompose into coordinates of the corresponding 32-bit 8x2 block in the input (swizzled) image
+        let input_block_x = block_index % input_blocks_per_row;
+        let input_block_y = block_index / input_blocks_per_row;
+        // index of the pixel within the OWxOH block
+        let x_in_output_block = i % OW;
+        let y_in_output_block = pixel_y % OH;
+        // odd rows use an altered mapping where each group of 4 is swapped with its neighbor
+        let output_block_pixel =
+            (y_in_output_block * OW + x_in_output_block) ^ ((output_block_y & 1) << 2);
+        // index of the corresponding pixel in the 32-bit block
+        let input_block_pixel = psmt_map::<OW, OH>(output_block_pixel);
+        let x_in_input_block = input_block_pixel % input_width;
+        let y_in_input_block = input_block_pixel / input_width;
+        // absolute index of pixel in input image
+        let in_index = (input_block_y * PSMCT32_COLUMN_HEIGHT + y_in_input_block) * width
+            + (input_block_x * input_width + x_in_input_block);
+        *b = input[in_index].into();
+    }
+
+    // honestly not sure why this is necessary
+    interleave(&mut out, 32);
+
+    out
 }
 
 #[derive(Debug, Copy, Clone)]
@@ -190,50 +273,19 @@ impl PixelStorageMode {
     pub fn read_indexes(&self, data: &[u8], width: usize, height: usize) -> Result<Vec<usize>> {
         match self {
             PixelStorageMode::PSMT8 | PixelStorageMode::PSMT8H => {
-                let area = width * height;
-                let mut out = vec![0usize; area];
-                // convert PSMCT32 back to PSMT8
-                let block_8s_per_row = width / PSMT8_COLUMN_WIDTH;
-                let block_32s_per_row = width / PSMCT32_COLUMN_WIDTH;
-                for (i, b) in out.iter_mut().enumerate() {
-                    let pixel_y = i / width;
-                    // coordinates of the 16x4 block containing pixel i in the output (unswizzled) image
-                    let block_8_x = (i % width) / PSMT8_COLUMN_WIDTH;
-                    let block_8_y = pixel_y / PSMT8_COLUMN_HEIGHT;
-                    // index of the block in the list of all blocks
-                    let block_index = block_8_y * block_8s_per_row + block_8_x;
-                    // decompose into coordinates of the corresponding 32-bit 8x2 (i.e.
-                    // 32x2 bytes) block in the input (swizzled) image
-                    let block_32_x = block_index % block_32s_per_row;
-                    let block_32_y = block_index / block_32s_per_row;
-                    // index of the pixel within the 16x4 block
-                    let x_in_block_8 = i % PSMT8_COLUMN_WIDTH;
-                    let y_in_block_8 = pixel_y % PSMT8_COLUMN_HEIGHT;
-                    // odd rows use an altered mapping where the first and second half of each
-                    // group of 8 are swapped
-                    let block_8_pixel =
-                        (y_in_block_8 * PSMT8_COLUMN_WIDTH + x_in_block_8) ^ ((block_8_y & 1) << 2);
-                    // index of the corresponding pixel in the 32-bit block
-                    let block_32_pixel = PSMT8_MAP[block_8_pixel];
-                    let x_in_block_32 = block_32_pixel % PSMCT32_COLUMN_WIDTH;
-                    let y_in_block_32 = block_32_pixel / PSMCT32_COLUMN_WIDTH;
-                    // absolute index of pixel in input image
-                    let in_index = (block_32_y * PSMCT32_COLUMN_HEIGHT + y_in_block_32) * width
-                        + (block_32_x * PSMCT32_COLUMN_WIDTH + x_in_block_32);
-                    *b = data[in_index] as usize;
-                }
-
-                // honestly not sure why this is necessary
-                swizzle(&mut out, width / 16);
-
-                Ok(out)
+                Ok(unswizzle::<4, 16, 4, _>(&data, width, height))
             }
-            PixelStorageMode::PSMT4 | PixelStorageMode::PSMT4HL | PixelStorageMode::PSMT4HH => {
-                Ok(data
+            PixelStorageMode::PSMT4 => {
+                let indexes: Vec<_> = data
                     .iter()
                     .flat_map(|b| [(*b & 0xf) as usize, (*b >> 4) as usize])
-                    .collect())
+                    .collect();
+                Ok(unswizzle::<8, 32, 4, _>(&indexes, width, height))
             }
+            PixelStorageMode::PSMT4HL | PixelStorageMode::PSMT4HH => Ok(data
+                .iter()
+                .flat_map(|b| [(*b & 0xf) as usize, (*b >> 4) as usize])
+                .collect()),
             _ => Err(anyhow!(
                 "Pixel storage mode {:?} is invalid for indexes",
                 self
@@ -393,7 +445,7 @@ impl PictureImage {
 
             // swizzle
             for clut in &mut cluts {
-                swizzle(clut, 1);
+                interleave(clut, 1);
             }
 
             ImageData::Indexes(
