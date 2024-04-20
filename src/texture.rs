@@ -71,9 +71,9 @@ const fn psmt_map<const W: usize, const H: usize>(i: usize) -> usize {
 ///
 /// # Parameters
 ///
-/// * `P` - The number of indexes in one pixel of each 8x2 PSMCT32 block
-/// * `OW` - Width of an index block
-/// * `OH` - Height of an index block
+/// * `P` - The number of indexes in one PSMCT32 pixel
+/// * `OW` - Width of a column in indexes
+/// * `OH` - Height of a column
 ///
 /// # Arguments
 ///
@@ -95,37 +95,31 @@ fn unswizzle<const P: usize, const OW: usize, const OH: usize, T: Into<usize> + 
     let area = cmp::min(width * height, input.len());
     let mut out = vec![0usize; area];
     // convert PSMCT32 back to original indexed format
-    let input_width = P * PSMCT32_COLUMN_WIDTH;
-    let output_blocks_per_row = width / OW;
-    let input_blocks_per_row = width / input_width;
+    let input_column_width = P * PSMCT32_COLUMN_WIDTH;
+    let columns_per_row = width / OW;
+    // apparently we need to treat the input image as if it has the same number of columns per row
+    // as the output image?
+    let input_width = input_column_width * columns_per_row;
     for (i, b) in out.iter_mut().enumerate() {
         let pixel_y = i / width;
-        // coordinates of the OWxOH block containing pixel i in the output (unswizzled) image
-        let output_block_x = (i % width) / OW;
-        let output_block_y = pixel_y / OH;
-        // index of the block in the list of all blocks
-        let block_index = output_block_y * output_blocks_per_row + output_block_x;
-        // decompose into coordinates of the corresponding 32-bit 8x2 block in the input (swizzled) image
-        let input_block_x = block_index % input_blocks_per_row;
-        let input_block_y = block_index / input_blocks_per_row;
-        // index of the pixel within the OWxOH block
-        let x_in_output_block = i % OW;
-        let y_in_output_block = pixel_y % OH;
-        // odd rows use an altered mapping where each group of 4 is swapped with its neighbor
-        let output_block_pixel =
-            (y_in_output_block * OW + x_in_output_block) ^ ((output_block_y & 1) << 2);
-        // index of the corresponding pixel in the 32-bit block
-        let input_block_pixel = psmt_map::<OW, OH>(output_block_pixel);
-        let x_in_input_block = input_block_pixel % input_width;
-        let y_in_input_block = input_block_pixel / input_width;
+        // coordinates of the column containing pixel i in the output (unswizzled) image
+        let column_x = (i % width) / OW;
+        let column_y = pixel_y / OH;
+        // index of the pixel within the OWxOH column
+        let x_in_output_column = i % OW;
+        let y_in_output_column = pixel_y % OH;
+        let output_column_pixel = (y_in_output_column * OW + x_in_output_column)
+            // odd rows use an altered mapping where each group of 4 is swapped with its neighbor
+            ^ ((column_y & 1) * 4);
+        // index of the corresponding pixel in the 32-bit column
+        let input_column_pixel = psmt_map::<OW, OH>(output_column_pixel);
+        let x_in_input_column = input_column_pixel % input_column_width;
+        let y_in_input_column = input_column_pixel / input_column_width;
         // absolute index of pixel in input image
-        let in_index = (input_block_y * PSMCT32_COLUMN_HEIGHT + y_in_input_block) * width
-            + (input_block_x * input_width + x_in_input_block);
+        let in_index = (column_y * PSMCT32_COLUMN_HEIGHT + y_in_input_column) * input_width
+            + (column_x * input_column_width + x_in_input_column);
         *b = input[in_index].into();
     }
-
-    // honestly not sure why this is necessary
-    interleave(&mut out, 32);
 
     out
 }
@@ -302,12 +296,12 @@ struct ImageDescriptor {
     pub pixel_type: PixelStorageMode,
     pub clut_pixel_type: PixelStorageMode, // this is a guess as I've only ever seen zero
     pub unknown06: u16,
-    pub unknown08: u16,
-    pub unknown0a: u16,
+    pub width_log2: u16,
+    pub height_log2: u16,
     pub unknown0c: u16,
     pub unknown0e: u16,
-    pub width: u16,
-    pub height: u16,
+    pub width: u16,  // inaccurate?
+    pub height: u16, // inaccurate?
     pub image_block_length: u32,
     pub image_block_offset: u32,
     pub num_cluts: u16,
@@ -351,27 +345,11 @@ impl ImageDescriptor {
     }
 
     pub fn pixel_width(&self) -> usize {
-        // FIXME: need this for other modes?
-        (if matches!(
-            self.pixel_type,
-            PixelStorageMode::PSMT8 | PixelStorageMode::PSMT8H
-        ) {
-            self.width * 2
-        } else {
-            self.width
-        }) as usize
+        1 << self.width_log2
     }
 
     pub fn pixel_height(&self) -> usize {
-        // FIXME: need this for other modes?
-        (if matches!(
-            self.pixel_type,
-            PixelStorageMode::PSMT8 | PixelStorageMode::PSMT8H
-        ) {
-            self.height * 2
-        } else {
-            self.height
-        }) as usize
+        1 << self.height_log2
     }
 }
 
