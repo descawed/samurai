@@ -56,12 +56,12 @@ const fn psmt_map<const W: usize, const H: usize>(i: usize) -> usize {
 
     let row_shift = num_column_bits + num_word_bits;
     let odd_column_shift = row_shift + 1;
-    let odd_column_group_shift = odd_column_shift - 2; // shift this bit to have value 4 to reverse groups of 4 in the odd columns
 
-    ((i ^ (4 & (i >> odd_column_group_shift))) & word_mask) * word_size // word select, swapping each group of 4 once we reach the second half of the block
+    let odd_column = (i >> odd_column_shift) & 1;
+    ((i ^ (odd_column << 2)) & word_mask) * word_size // word select, swapping each group of 4 once we reach the second half of the block
         + ((i >> num_word_bits) & column_pair_mask) * 2 // column pair select
         + ((i >> row_shift) & 1) * row_size // row select
-        + ((i >> odd_column_shift) & 1) // odd column select
+        + odd_column // odd column select
 }
 
 /// Unswizzle swizzled index data.
