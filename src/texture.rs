@@ -267,7 +267,7 @@ impl PixelStorageMode {
     pub fn read_indexes(&self, data: &[u8], width: usize, height: usize) -> Result<Vec<usize>> {
         match self {
             PixelStorageMode::PSMT8 | PixelStorageMode::PSMT8H => {
-                Ok(unswizzle::<4, 16, 4, _>(&data, width, height))
+                Ok(unswizzle::<4, 16, 4, _>(data, width, height))
             }
             PixelStorageMode::PSMT4 => {
                 let indexes: Vec<_> = data

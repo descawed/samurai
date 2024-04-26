@@ -1,17 +1,41 @@
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::fs::File;
 use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
 use std::process;
+use std::str::FromStr;
 
-use anyhow::{anyhow, Result};
-use clap::{arg, Arg, ArgAction, Command};
+use anyhow::{anyhow, Error, Result};
+use clap::{arg, Command};
 use walkdir::WalkDir;
 
 use samurai::texture::{PictureImageFile, StackDirection};
-use samurai::volume::{Volume, DEFAULT_MAX_OBJECTS};
+use samurai::volume::{hash_name, Volume, DEFAULT_MAX_OBJECTS};
 use samurai::{script, Readable};
 
+#[derive(Clone, Copy, Debug)]
+enum UnorderedBehavior {
+    Fail,
+    Ignore,
+    Append,
+}
+
+impl FromStr for UnorderedBehavior {
+    type Err = Error;
+
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        match s {
+            "fail" => Ok(Self::Fail),
+            "ignore" => Ok(Self::Ignore),
+            "append" => Ok(Self::Append),
+            _ => Err(anyhow!("Unknown UnorderedBehavior {}", s)),
+        }
+    }
+}
+
+// rustfmt doesn't understand the arg! macro syntax
+#[rustfmt::skip]
 fn cli() -> Command {
     Command::new("samurai")
         .about("Manipulate files for the PS2 game (Way of the) Samurai")
@@ -25,6 +49,12 @@ fn cli() -> Command {
                     Command::new("list")
                         .about("List contents of volume.dat")
                         .arg(
+                            arg!(-s --sort "Sort the output alphabetically")
+                        )
+                        .arg(
+                            arg!(-v --verbose "Print additional information about each file")
+                        )
+                        .arg(
                             arg!(<VOLUME> "Path to volume.dat")
                                 .value_parser(clap::value_parser!(PathBuf)),
                         ),
@@ -33,11 +63,7 @@ fn cli() -> Command {
                     Command::new("validate")
                         .about("Validate a volume.dat file")
                         .arg(
-                            Arg::new("quiet")
-                                .short('q')
-                                .long("quiet")
-                                .help("Suppress output when no issues are detected")
-                                .action(ArgAction::SetTrue)
+                            arg!(-q --quiet "Suppress output when no issues are detected")
                         )
                         .arg(
                             arg!(<VOLUME> "Path to volume.dat")
@@ -48,25 +74,24 @@ fn cli() -> Command {
                     Command::new("pack")
                         .about("Pack one or more directories into a volume")
                         .arg(
-                            Arg::new("unformat_scripts")
-                                .short('u')
-                                .long("unformat-scripts")
-                                .help("Reverse the effect of formatting scripts when the volume was unpacked")
-                                .action(ArgAction::SetTrue)
+                            arg!(-u --"unformat-scripts" "Reverse the effect of formatting scripts when the volume was unpacked")
                         )
                         .arg(
-                            Arg::new("max_objects")
-                                .short('m')
-                                .long("max-objects")
-                                .help("Maximum number of objects to reserve space for in the volume header")
+                            arg!(-m --"max-objects" <MAX> "Maximum number of objects to reserve space for in the volume header")
                                 .value_parser(clap::value_parser!(u32))
                         )
                         .arg(
-                            Arg::new("verbose")
-                                .short('v')
-                                .long("verbose")
-                                .help("Print a listing of files as they're packed")
-                                .action(ArgAction::SetTrue)
+                            arg!(-v --verbose "Print a listing of files as they're packed")
+                        )
+                        .arg(
+                            arg!(-o --order <PATH> "Path to a text file with a newline-delimited list of filenames in the order they should be packed in the volume")
+                                .value_parser(clap::value_parser!(PathBuf))
+                        )
+                        .arg(
+                            arg!(-b --"unordered-behavior" <BEHAVIOR> "Action to take when an input file isn't found in the order file")
+                                .default_value("fail")
+                                .value_parser(["fail", "ignore", "append"])
+                                .requires("order")
                         )
                         .arg(arg!(<VOLUME> "Path to volume.dat to be created").value_parser(clap::value_parser!(PathBuf)))
                         .arg(arg!(<INPUT> ... "One or more input directories to pack").value_parser(clap::value_parser!(PathBuf))),
@@ -74,28 +99,16 @@ fn cli() -> Command {
                 .subcommand(
                     Command::new("unpack")
                         .about("Unpack the contents of volume.dat")
-                        // not using the arg macro here because rustfmt screws up the long option
                         .arg(
-                            Arg::new("format_scripts")
-                                .short('f')
-                                .long("format-scripts")
-                                .help("Format scripts for readability")
-                                .action(ArgAction::SetTrue)
+                            arg!(-f --"format-scripts" "Format scripts for readability")
                         )
                         .arg(
-                            Arg::new("tab_width")
-                                .short('t')
-                                .long("tab-width")
-                                .help("If provided, lines will be indented with the requested number of spaces instead of tabs")
+                            arg!(-t --"tab-width" <WIDTH> "If provided, lines will be indented with the requested number of spaces instead of tabs")
                                 .value_parser(clap::value_parser!(usize))
-                                .requires("format_scripts")
+                                .requires("format-scripts")
                         )
                         .arg(
-                            Arg::new("verbose")
-                                .short('v')
-                                .long("verbose")
-                                .help("Print a listing of files as they're unpacked")
-                                .action(ArgAction::SetTrue)
+                            arg!(-v --verbose "Print a listing of files as they're unpacked")
                         )
                         .arg(
                             arg!(<VOLUME> "Path to volume.dat")
@@ -117,10 +130,7 @@ fn cli() -> Command {
                 .subcommand(
                     Command::new("format").about("Format a raw script file for readability")
                         .arg(
-                            Arg::new("tab_width")
-                                .short('t')
-                                .long("tab-width")
-                                .help("If provided, lines will be indented with the requested number of spaces instead of tabs")
+                            arg!(-t --"tab-width" <WIDTH> "If provided, lines will be indented with the requested number of spaces instead of tabs")
                                 .value_parser(clap::value_parser!(usize))
                         )
                         .arg(
@@ -161,31 +171,19 @@ fn cli() -> Command {
                     Command::new("export")
                         .about("Export a texture image to another format")
                         .arg(
-                            Arg::new("index")
-                                .short('i')
-                                .long("image")
-                                .help("An index of an image in the texture to extract. Zero-based. May be specified multiple times.")
+                            arg!(-i --index <INDEX> "An index of an image in the texture to extract. Zero-based. May be specified multiple times.")
                                 .value_parser(clap::value_parser!(usize))
                         )
                         .arg(
-                            Arg::new("clut")
-                                .short('c')
-                                .long("clut")
-                                .help("An index of a CLUT to use when exporting the image. Zero-based. May be specified multiple times.")
+                            arg!(-c --clut <INDEX> "An index of a CLUT to use when exporting the image. Zero-based. May be specified multiple times.")
                                 .value_parser(clap::value_parser!(usize))
                         )
                         .arg(
-                            Arg::new("format")
-                                .short('f')
-                                .long("format")
-                                .help("The image format (file extension) to export to. Defaults to png. If exporting a single image, the file extension in the export path will override this.")
+                            arg!(-f --format <FORMAT> "The image format (file extension) to export to. Defaults to png. If exporting a single image, the file extension in the export path will override this.")
                                 .default_value("png")
                         )
                         .arg(
-                            Arg::new("stack")
-                                .short('s')
-                                .long("stack-cluts")
-                                .help("Stack all CLUTs into one export image either horizontally or vertically")
+                            arg!(-s --"stack-cluts" <DIR> "Stack all CLUTs into one export image either horizontally or vertically")
                                 .value_parser(["h", "horizontal", "v", "vertical"])
                                 .conflicts_with("clut")
                         )
@@ -201,13 +199,21 @@ fn cli() -> Command {
         )
 }
 
-fn list_volume(path: &Path) -> Result<()> {
+fn list_volume(path: &Path, do_sort: bool, verbose: bool) -> Result<()> {
     let volume = Volume::load(path)?;
     let mut names: Vec<_> = volume.iter().map(|(n, _)| n).collect();
-    names.sort();
+    if do_sort {
+        names.sort();
+    }
 
     for name in names {
-        println!("{}", name);
+        if verbose {
+            let data = volume.get(name).unwrap();
+            let hash = hash_name(name.as_bytes());
+            println!("{} (hash: {:08X}, {} bytes)", name, hash, data.len());
+        } else {
+            println!("{}", name);
+        }
     }
 
     Ok(())
@@ -305,7 +311,11 @@ fn pack_volume<T: AsRef<Path>, I: Iterator<Item = T>>(
     unformat_scripts: bool,
     max_objects: u32,
     verbose: bool,
+    order_path: Option<&Path>,
+    unordered_behavior: UnorderedBehavior,
 ) -> Result<()> {
+    let mut paths = vec![];
+    let mut volume_names = HashSet::new();
     let mut volume = Volume::new(max_objects);
     for import_path in import_paths {
         let import_path = import_path.as_ref();
@@ -331,25 +341,87 @@ fn pack_volume<T: AsRef<Path>, I: Iterator<Item = T>>(
                 .map_or(false, |d| d.to_string_lossy() == "script");
             // volume.dat always uses backslashes
             let volume_name = relative.to_string_lossy().replace('/', "\\");
-            let (data, verbose_prefix) = if is_script && unformat_scripts {
-                (
-                    script::unformat_script(&fs::read_to_string(path)?),
-                    "Unformatted and packed script file",
-                )
-            } else {
-                (fs::read(path)?, "Packed")
-            };
-
-            let hash = volume.add(volume_name.clone(), data)?;
-            if verbose {
-                println!(
-                    "{} {} as {} (hash {:08X})",
-                    verbose_prefix,
-                    path.display(),
-                    volume_name,
-                    hash
-                );
+            if !volume_names.insert(volume_name.clone()) {
+                return Err(anyhow!("Duplicate input filename {}", volume_name));
             }
+            paths.push((path.to_path_buf(), volume_name, is_script));
+        }
+    }
+
+    let paths = match order_path {
+        Some(order_path) => {
+            let data = fs::read_to_string(order_path)?;
+            let (ordered_names, not_found_names): (Vec<_>, Vec<_>) = data
+                .split('\n')
+                .filter(|n| !n.is_empty())
+                .partition(|n| volume_names.contains(*n));
+
+            if !not_found_names.is_empty() {
+                eprintln!("Warning: the following names from the order file were not found:");
+                for name in not_found_names {
+                    eprintln!("\t{}", name);
+                }
+            }
+
+            let indexes: HashMap<_, _> = ordered_names
+                .into_iter()
+                .enumerate()
+                .map(|(i, n)| (n, i))
+                .collect();
+
+            let mut new_paths = vec![(PathBuf::new(), String::new(), false); paths.len()];
+            let mut num_appended = 0usize;
+            for path_info in paths {
+                let new_index = {
+                    let name = path_info.1.as_str();
+                    match (indexes.get(&name), unordered_behavior) {
+                        (Some(new_index), _) => *new_index,
+                        (None, UnorderedBehavior::Fail) => {
+                            return Err(anyhow!("{} not found in order file", name))
+                        }
+                        (None, UnorderedBehavior::Ignore) => {
+                            new_paths.pop();
+                            continue;
+                        }
+                        (None, UnorderedBehavior::Append) => {
+                            num_appended += 1;
+                            new_paths.len() - num_appended
+                        }
+                    }
+                };
+
+                new_paths[new_index] = path_info;
+            }
+
+            new_paths
+        }
+        None => {
+            // default to alphabetical sort
+            // FIXME: this should sort by Shift JIS codepoint, not Unicode codepoint
+            paths.sort_by(|a, b| a.1.to_lowercase().cmp(&b.1.to_lowercase()));
+            paths
+        }
+    };
+
+    for (path, volume_name, is_script) in paths {
+        let (data, verbose_prefix) = if is_script && unformat_scripts {
+            (
+                script::unformat_script(&fs::read_to_string(&path)?),
+                "Unformatted and packed script file",
+            )
+        } else {
+            (fs::read(&path)?, "Packed")
+        };
+
+        let hash = volume.add(volume_name.clone(), data)?;
+        if verbose {
+            println!(
+                "{} {} as {} (hash {:08X})",
+                verbose_prefix,
+                path.display(),
+                volume_name,
+                hash
+            );
         }
     }
 
@@ -466,7 +538,11 @@ fn main() -> Result<()> {
                     .get_one::<PathBuf>("VOLUME")
                     .expect("Path to volume.dat is required");
 
-                list_volume(volume_path)?
+                let do_sort = list_matches.get_flag("sort");
+
+                let verbose = list_matches.get_flag("verbose");
+
+                list_volume(volume_path, do_sort, verbose)?;
             }
             Some(("validate", validate_matches)) => {
                 let volume_path = validate_matches
@@ -486,9 +562,19 @@ fn main() -> Result<()> {
                     .get_many::<PathBuf>("INPUT")
                     .expect("At least one input directory is required");
 
-                let unformat_scripts = pack_matches.get_flag("unformat_scripts");
+                let order_path = pack_matches
+                    .get_one::<PathBuf>("order")
+                    .map(PathBuf::as_path);
+
+                let unordered_behavior = UnorderedBehavior::from_str(
+                    pack_matches
+                        .get_one::<String>("unordered-behavior")
+                        .unwrap(),
+                )?;
+
+                let unformat_scripts = pack_matches.get_flag("unformat-scripts");
                 let max_objects = pack_matches
-                    .get_one::<u32>("max_objects")
+                    .get_one::<u32>("max-objects")
                     .copied()
                     .unwrap_or(DEFAULT_MAX_OBJECTS);
                 let verbose = pack_matches.get_flag("verbose");
@@ -499,6 +585,8 @@ fn main() -> Result<()> {
                     unformat_scripts,
                     max_objects,
                     verbose,
+                    order_path,
+                    unordered_behavior,
                 )?;
             }
             Some(("unpack", unpack_matches)) => {
@@ -515,8 +603,8 @@ fn main() -> Result<()> {
                     .map(|v| v.map(|s| s.replace('/', "\\")).collect())
                     .unwrap_or(vec![]);
 
-                let format_scripts = unpack_matches.get_flag("format_scripts");
-                let tab_width = unpack_matches.get_one::<usize>("tab_width");
+                let format_scripts = unpack_matches.get_flag("format-scripts");
+                let tab_width = unpack_matches.get_one::<usize>("tab-width");
                 let verbose = unpack_matches.get_flag("verbose");
 
                 unpack_volume(
@@ -540,7 +628,7 @@ fn main() -> Result<()> {
                     .get_one::<PathBuf>("SCRIPT")
                     .expect("Path to script file is required");
                 let output_path = format_matches.get_one::<PathBuf>("OUTPUT");
-                let tab_width = format_matches.get_one::<usize>("tab_width");
+                let tab_width = format_matches.get_one::<usize>("tab-width");
                 format_script(
                     script_path,
                     output_path.map(PathBuf::as_path),

@@ -3,6 +3,7 @@ use std::io::{Read, Seek, SeekFrom, Write};
 
 use anyhow::{anyhow, Result};
 use binrw::{binrw, BinRead, BinWrite, BinWriterExt, NullString};
+use ordered_hash_map::OrderedHashMap;
 
 use super::{Readable, Validated};
 
@@ -15,13 +16,13 @@ const HEADER_SIZE: u32 = 20;
 ///
 /// The hash must uniquely identify the object within the volume. Prior to hashing, the name will
 /// be converted to uppercase and forward slashes will be replaced with backslashes.
-fn hash_name(name: &[u8]) -> u32 {
+pub fn hash_name(name: &[u8]) -> u32 {
     name.iter().map(|c| if *c == b'/' { b'\\' } else { c.to_ascii_uppercase() } as u32).fold(0, |acc, c| acc.overflowing_mul(0x13).0.overflowing_add(c).0)
 }
 
-/// Round up to the next multiple of 256 (low 8 bits zero)
-const fn round8(value: u32) -> u32 {
-    (value + 0xFF) & !0xFF
+/// Round up to the next sector (multiple of 2048)
+const fn round_sector(value: u32) -> u32 {
+    (value + 0x7FF) & !0x7FF
 }
 
 #[binrw]
@@ -54,7 +55,7 @@ struct VolumeHeader {
 #[derive(Debug)]
 pub struct Volume {
     max_objects: u32,
-    objects: HashMap<String, Vec<u8>>,
+    objects: OrderedHashMap<String, Vec<u8>>,
     hashes: HashMap<u32, String>,
 }
 
@@ -71,7 +72,7 @@ impl Volume {
     pub fn new(max_objects: u32) -> Self {
         Self {
             max_objects,
-            objects: HashMap::new(),
+            objects: OrderedHashMap::new(),
             hashes: HashMap::new(),
         }
     }
@@ -107,9 +108,10 @@ impl Volume {
             ));
         }
 
+        let header_size = self.max_objects * DESCRIPTOR_SIZE + HEADER_SIZE;
         let mut header = VolumeHeader {
             max_objects: self.max_objects,
-            header_size: round8(self.max_objects * DESCRIPTOR_SIZE + HEADER_SIZE),
+            header_size: round_sector(header_size),
             file_size: 0,
             descriptors: Vec::with_capacity(self.objects.len()),
         };
@@ -132,15 +134,15 @@ impl Volume {
                 name_size: name.len() as u32 + 1, // +1 for null byte
             });
 
-            start = round8(object_end as u32) as usize;
+            start = round_sector(object_end as u32) as usize;
             let padding = start - object_end;
             sink.seek(SeekFrom::Current(padding as i64))?;
         }
 
         // go back and finish up the header
         header.descriptors.sort_by_key(|d| d.hash); // descriptors must be sorted by hash because the game finds entries by binary search
-        let file_size = sink.stream_position()?;
-        header.file_size = (file_size & !0xFFF) as u32; // FIXME: is this right?
+        let file_size = sink.stream_position()? as u32 - header_size;
+        header.file_size = file_size & !0x7FF; // this seems to round down to the nearest sector instead of up
         sink.seek(SeekFrom::Start(0))?;
         header.write(&mut sink)?;
 
@@ -241,7 +243,7 @@ impl Readable for Volume {
     fn read<F: Read + Seek>(mut source: F) -> Result<Validated<Self>> {
         let mut warnings = vec![];
 
-        let header = VolumeHeader::read(&mut source)?;
+        let mut header = VolumeHeader::read(&mut source)?;
         let num_objects = header.descriptors.len();
         if num_objects > header.max_objects as usize {
             warnings.push(format!(
@@ -250,7 +252,10 @@ impl Readable for Volume {
             ));
         }
 
-        let mut objects = HashMap::with_capacity(num_objects);
+        // the descriptors will be sorted as necessary when writing, so make sure we keep things in
+        // the original file order
+        header.descriptors.sort_by_key(|d| d.start);
+        let mut objects = OrderedHashMap::with_capacity(num_objects);
         let mut hashes = HashMap::with_capacity(num_objects);
         for (i, descriptor) in header.descriptors.iter().enumerate() {
             source.seek(SeekFrom::Start(
@@ -300,6 +305,6 @@ mod tests {
 
     #[test]
     fn test_round() {
-        assert_eq!(round8(4000 * DESCRIPTOR_SIZE + HEADER_SIZE), 0x17800);
+        assert_eq!(round_sector(4000 * DESCRIPTOR_SIZE + HEADER_SIZE), 0x17800);
     }
 }
