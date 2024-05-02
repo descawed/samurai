@@ -8,12 +8,12 @@ pub(super) struct Variable(String, Option<Box<Variable>>); // variable with zero
 
 impl Display for Variable {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let mut s = format!("#{}", self.0);
+        write!(f, "#{}", self.0)?;
         if let Some(ref v) = self.1 {
-            s.push_str(&v.to_string());
+            v.fmt(f)?;
         }
 
-        write!(f, "{}", s)
+        Ok(())
     }
 }
 
@@ -40,7 +40,7 @@ pub(super) enum Statement {
     Conditional(Conditional, Option<Block>), // conditional with an optional else block
     Expression(Expression),
     Return,
-    // TODO: loops and breaks
+    // TODO: loops, breaks, ternary
 }
 
 pub(super) fn parser<'src>(
@@ -201,9 +201,12 @@ pub(super) fn parser<'src>(
             .then(block)
             .map(|(e, b)| Statement::ObjectInitialization(e, b));
 
+        let return_stmt = just("/return").padded().to(Statement::Return);
+
         let stmt_expr = expr.map(Statement::Expression);
 
         conditional
+            .or(return_stmt)
             .or(object_init)
             .or(stmt_expr)
             .then_ignore(just(';').padded())
@@ -484,5 +487,11 @@ mod tests {
         );
         assert!(matches!(*super_var, Expression::Variable(Variable(ref s, None)) if s == "object"));
         assert_eq!(block.len(), 1);
+    }
+
+    #[test]
+    fn test_return() {
+        let stmt = one_statement(" /return ; ");
+        assert!(matches!(stmt, Statement::Return));
     }
 }
