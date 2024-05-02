@@ -195,9 +195,18 @@ pub(super) fn parser<'src>(
             .then(block.clone().or_not())
             .map(|(c, b)| Statement::Conditional(c, b));
 
+        let object_init = expr
+            .clone()
+            .then_ignore(just('@'))
+            .then(block)
+            .map(|(e, b)| Statement::ObjectInitialization(e, b));
+
         let stmt_expr = expr.map(Statement::Expression);
 
-        conditional.or(stmt_expr).then_ignore(just(';').padded())
+        conditional
+            .or(object_init)
+            .or(stmt_expr)
+            .then_ignore(just(';').padded())
     });
 
     stmt.repeated().collect()
@@ -453,5 +462,27 @@ mod tests {
         assert!(matches!(else_if_condition, Expression::MethodCall(_, _, _)));
         assert_eq!(else_if_block.len(), 2);
         assert_eq!(else_block.len(), 1);
+    }
+
+    #[test]
+    fn test_object_init() {
+        let stmt = one_statement(
+            "
+        (#MyClass : #object) @ {
+            #attr : 1;
+        };
+        ",
+        );
+        let Statement::ObjectInitialization(obj_expr, block) = stmt else {
+            panic!("Statement was not an object initialization statement");
+        };
+        let Expression::ValueDeclaration(class_var, super_var) = obj_expr else {
+            panic!("Object expression was not a value declaration");
+        };
+        assert!(
+            matches!(*class_var, Expression::Variable(Variable(ref s, None)) if s == "MyClass")
+        );
+        assert!(matches!(*super_var, Expression::Variable(Variable(ref s, None)) if s == "object"));
+        assert_eq!(block.len(), 1);
     }
 }
