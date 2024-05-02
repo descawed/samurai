@@ -12,10 +12,11 @@ repository = "https://github.com/descawed/samurai"
 [dependencies]
 anyhow = "~1.0.82"
 binrw = "~0.13.3"
+chumsky = "1.0.0-alpha.7"
 clap = "~4.5.4"
 encoding_rs = "~0.8.34"
 image = "~0.25.1"
 ordered_hash_map = "~0.4.0"
 pathdiff = "~0.2.1"
 walkdir = "~2.5.0"
-log = "0.4.21"
+strum = { version = "~0.26.2", features = ["derive"] }

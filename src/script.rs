@@ -1,4 +1,82 @@
+use std::str::FromStr;
+
 use encoding_rs::*;
+use strum::{EnumIter, EnumString};
+
+mod parser;
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash, EnumString, EnumIter)]
+enum EnumType {
+    #[strum(serialize = "MTAS")]
+    Animation,
+    #[strum(serialize = "CHID")]
+    Character,
+    #[strum(serialize = "SAY")]
+    Say,
+    #[strum(serialize = "COMMAND")]
+    Command,
+    #[strum(serialize = "PARAM_ATTACK")]
+    ParamAttack,
+    #[strum(serialize = "PARAM_WEAPON")]
+    ParamWeapon,
+    #[strum(serialize = "PARAM_KICK")]
+    ParamKick,
+    #[strum(serialize = "FEEL")]
+    Feeling,
+    #[strum(serialize = "EVENT")]
+    Event,
+    #[strum(serialize = "EFFECT")]
+    Effect,
+    #[strum(serialize = "FADE")]
+    Fade,
+    #[strum(serialize = "CAMERA")]
+    Camera,
+    #[strum(serialize = "WATCH")]
+    Watch,
+    #[strum(serialize = "MAPID")]
+    Map,
+    #[strum(serialize = "TIME")]
+    Time,
+    #[strum(serialize = "DAMAGE")]
+    Damage,
+    #[strum(serialize = "AI")]
+    Ai,
+    #[strum(serialize = "OBJ")]
+    Object,
+    #[strum(serialize = "BGM")]
+    Bgm,
+    #[strum(serialize = "FRIEND")]
+    Friend,
+    #[strum(serialize = "EVENTPRO")]
+    EventProgress,
+    #[strum(serialize = "FOOTING")]
+    Footing,
+    #[strum(serialize = "BTN")]
+    Button,
+    #[strum(serialize = "OBJECT")]
+    ObjectSet,
+    // these two don't follow the normal naming convention and need special handling
+    Boolean,
+    Relation,
+}
+
+impl EnumType {
+    fn get_constant_type(constant: &str) -> Option<Self> {
+        match constant {
+            "ON" | "OFF" => Some(Self::Boolean),
+            "NO_RELATION" | "ENEMY_RELATION" | "FRIEND_RELATION" => Some(Self::Relation),
+            _ => {
+                let index = constant
+                    .match_indices('_')
+                    .skip_while(|(_, s)| *s == "PARAM") // PARAMs need the next part of the name as well
+                    .next()?
+                    .0;
+                let prefix = &constant[..index];
+                Self::from_str(prefix).ok()
+            }
+        }
+    }
+}
 
 fn start_line(
     line_start: &mut bool,
