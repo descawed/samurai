@@ -137,15 +137,17 @@ pub(super) fn parser<'src>(
                 .padded()
                 .ignore_then(
                     text::ident()
-                        .padded()
                         .to_slice()
                         .map(String::from)
+                        .padded()
                         .separated_by(just(','))
                         .collect()
-                        .delimited_by(just('('), just(')')),
+                        .delimited_by(just('('), just(')'))
+                        .padded()
+                        .or_not(),
                 )
                 .then(block)
-                .map(|(i, b)| Expression::FunctionDefinition(i, b));
+                .map(|(a, b)| Expression::FunctionDefinition(a.unwrap_or_else(Vec::new), b));
 
             let function =
                 text::ident()
@@ -299,5 +301,42 @@ mod tests {
             panic!("Statement was not a value declaration expression");
         };
         assert!(matches!(*value, Expression::Int(4)));
+    }
+
+    #[test]
+    fn test_func_no_args() {
+        let stmt = one_statement(
+            "
+        #MyFunc | ?F {
+            $Print \"my cool function\";
+        };
+        ",
+        );
+        let Statement::Expression(Expression::ReferenceDeclaration(var, value)) = stmt else {
+            panic!("Statement was not a reference declaration expression");
+        };
+        assert!(matches!(*var, Expression::Variable(Variable(ref s, None)) if s == "MyFunc"));
+        let Expression::FunctionDefinition(args, body) = *value else {
+            panic!("Value was not a function definition");
+        };
+        assert!(args.is_empty());
+        assert_eq!(body.len(), 1);
+    }
+
+    #[test]
+    fn test_func_args() {
+        let stmt = one_statement(
+            "
+        ?F (a, b) {
+            #a add #b;
+        };",
+        );
+        let Statement::Expression(Expression::FunctionDefinition(args, body)) = stmt else {
+            panic!("Value was not a function definition");
+        };
+        assert_eq!(args.len(), 2);
+        assert_eq!(args[0], "a");
+        assert_eq!(args[1], "b");
+        assert_eq!(body.len(), 1);
     }
 }
