@@ -99,19 +99,26 @@ pub(super) fn parser<'src>(
             out
         });
 
-    let any_var = global_var.or(var.clone());
+    let any_var = global_var.or(var.clone()).padded();
 
     let atom = var.or(string).or(neg_num).or(num);
 
     let stmt = recursive(|stmt| {
-        let block = stmt.repeated().collect().delimited_by(just('{'), just('}'));
+        let block = stmt
+            .repeated()
+            .collect()
+            .delimited_by(just('{'), just('}'))
+            .padded();
 
         let expr = recursive(|expr| {
             let args = expr.clone().separated_by(just(',')).collect();
 
             // https://github.com/zesterer/chumsky/discussions/58
             // if we let the left-hand side of a method call be any expression, we get infinite recursion
-            // and a stack overflow
+            // and a stack overflow, so limit it to a bare atom or a parenthetical expression.
+            // a consequence of using atom here, which doesn't include global_var, is that we'll never
+            // parse a method call as having a global variable on the left-hand side; it'll always be
+            // the method call itself that's wrapped in a global context
             let delimited = atom
                 .clone()
                 .or(expr.clone().delimited_by(just('('), just(')')));
@@ -124,12 +131,12 @@ pub(super) fn parser<'src>(
 
             let ref_decl = any_var
                 .clone()
-                .then_ignore(just('|').padded())
+                .then_ignore(just('|'))
                 .then(expr.clone())
                 .map(|(l, r)| Expression::ReferenceDeclaration(Box::new(l), Box::new(r)));
 
             let val_decl = any_var
-                .then_ignore(just(':').padded())
+                .then_ignore(just(':'))
                 .then(expr.clone())
                 .map(|(l, r)| Expression::ValueDeclaration(Box::new(l), Box::new(r)));
 
@@ -146,7 +153,7 @@ pub(super) fn parser<'src>(
                         .padded()
                         .or_not(),
                 )
-                .then(block)
+                .then(block.clone())
                 .map(|(a, b)| Expression::FunctionDefinition(a.unwrap_or_else(Vec::new), b));
 
             let function =
@@ -173,9 +180,24 @@ pub(super) fn parser<'src>(
                 .padded()
         });
 
-        expr.then_ignore(just(';'))
+        let condition_block = recursive(|condition_block| {
+            expr.clone()
+                .delimited_by(just('('), just(')'))
+                .then(block.clone())
+                .then(condition_block.or_not())
+                .map(|((c, b), e): ((Expression, Block), Option<Conditional>)| {
+                    Conditional(c, b, e.map(Box::new))
+                })
+        });
+        let conditional = just("?i")
             .padded()
-            .map(Statement::Expression)
+            .ignore_then(condition_block)
+            .then(block.clone().or_not())
+            .map(|(c, b)| Statement::Conditional(c, b));
+
+        let stmt_expr = expr.map(Statement::Expression);
+
+        conditional.or(stmt_expr).then_ignore(just(';').padded())
     });
 
     stmt.repeated().collect()
@@ -338,5 +360,98 @@ mod tests {
         assert_eq!(args[0], "a");
         assert_eq!(args[1], "b");
         assert_eq!(body.len(), 1);
+    }
+
+    #[test]
+    fn test_if() {
+        let stmt = one_statement(
+            "
+        ?i (#a eq 1) {
+            Func1;
+        };
+        ",
+        );
+        let Statement::Conditional(conditional, None) = stmt else {
+            panic!("Statement was not an if statement with no else");
+        };
+        assert!(matches!(conditional.0, Expression::MethodCall(_, _, _)));
+        assert_eq!(conditional.1.len(), 1);
+        assert!(conditional.2.is_none());
+    }
+
+    #[test]
+    fn test_else_if() {
+        let stmt = one_statement(
+            "
+        ?i (#a eq 1) {
+            Func1;
+        } (#a eq 2) {
+            Func2;
+            Func2_2;
+        };
+        ",
+        );
+        let Statement::Conditional(conditional, None) = stmt else {
+            panic!("Statement was not an if statement with no else");
+        };
+        assert!(matches!(conditional.0, Expression::MethodCall(_, _, _)));
+        assert_eq!(conditional.1.len(), 1);
+        let Conditional(else_if_condition, else_if_block, None) =
+            *conditional.2.expect("statement should have else-if")
+        else {
+            panic!("Statement was not an if statement with a single else-if");
+        };
+        assert!(matches!(else_if_condition, Expression::MethodCall(_, _, _)));
+        assert_eq!(else_if_block.len(), 2);
+    }
+
+    #[test]
+    fn test_else() {
+        let stmt = one_statement(
+            "
+        ?i (#a eq 1) {
+            Func1;
+        } {
+            Func2;
+            Func2_2;
+        };
+        ",
+        );
+        let Statement::Conditional(conditional, Some(else_block)) = stmt else {
+            panic!("Statement was not an if statement with an else");
+        };
+        assert!(matches!(conditional.0, Expression::MethodCall(_, _, _)));
+        assert_eq!(conditional.1.len(), 1);
+        assert!(conditional.2.is_none());
+        assert_eq!(else_block.len(), 2);
+    }
+
+    #[test]
+    fn test_else_if_else() {
+        let stmt = one_statement(
+            "
+        ?i (#a eq 1) {
+            Func1;
+        } (#a eq 2) {
+            Func2;
+            Func2_2;
+        } {
+            Func3;
+        };
+        ",
+        );
+        let Statement::Conditional(conditional, Some(else_block)) = stmt else {
+            panic!("Statement was not an if statement with an else");
+        };
+        assert!(matches!(conditional.0, Expression::MethodCall(_, _, _)));
+        assert_eq!(conditional.1.len(), 1);
+        let Conditional(else_if_condition, else_if_block, None) =
+            *conditional.2.expect("statement should have else-if")
+        else {
+            panic!("Statement was not an if statement with a single else-if");
+        };
+        assert!(matches!(else_if_condition, Expression::MethodCall(_, _, _)));
+        assert_eq!(else_if_block.len(), 2);
+        assert_eq!(else_block.len(), 1);
     }
 }

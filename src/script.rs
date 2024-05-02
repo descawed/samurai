@@ -68,8 +68,7 @@ impl EnumType {
             _ => {
                 let index = constant
                     .match_indices('_')
-                    .skip_while(|(_, s)| *s == "PARAM") // PARAMs need the next part of the name as well
-                    .next()?
+                    .find(|(_, s)| *s != "PARAM")? // PARAMs need the next part of the name as well
                     .0;
                 let prefix = &constant[..index];
                 Self::from_str(prefix).ok()
