@@ -1,13 +1,82 @@
-use chumsky::prelude::*;
-use std::fmt::Display;
+use std::fmt::{Display, Formatter};
+use std::ops::{Deref, DerefMut};
 
-pub(super) type Block = Vec<Statement>;
+use chumsky::prelude::*;
+
+#[derive(Debug, Clone)]
+pub(super) struct Block(Vec<Statement>);
+
+impl Display for Block {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        if self.is_empty() {
+            write!(f, "{{ }}")
+        } else {
+            write!(f, "{{\n")?;
+            for stmt in self {
+                // for proper indentation, we need to first write the statement to a temp
+                // string, as statements can contain multiple lines and nested blocks
+                let stmt_string = stmt.to_string();
+                write!(f, "\t{}\n", stmt_string.replace('\n', "\n\t"))?;
+            }
+            write!(f, "}}")
+        }
+    }
+}
+
+//#region Vec wrapper impls for Block
+impl From<Vec<Statement>> for Block {
+    fn from(value: Vec<Statement>) -> Self {
+        Self(value)
+    }
+}
+
+impl Deref for Block {
+    type Target = Vec<Statement>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl DerefMut for Block {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+
+impl IntoIterator for Block {
+    type Item = Statement;
+    type IntoIter = std::vec::IntoIter<Self::Item>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.0.into_iter()
+    }
+}
+
+impl<'a> IntoIterator for &'a Block {
+    type Item = &'a Statement;
+    type IntoIter = std::slice::Iter<'a, Statement>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.0.iter()
+    }
+}
+
+impl<'a> IntoIterator for &'a mut Block {
+    type Item = &'a mut Statement;
+    type IntoIter = std::slice::IterMut<'a, Statement>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.0.iter_mut()
+    }
+}
+//#endregion
 
 #[derive(Debug, PartialEq, Clone)]
 pub(super) struct Variable(String, Option<Box<Variable>>); // variable with zero or more attribute accesses
 
 impl Display for Variable {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         write!(f, "#{}", self.0)?;
         if let Some(ref v) = self.1 {
             v.fmt(f)?;
@@ -31,8 +100,103 @@ pub(super) enum Expression {
     Global(Box<Expression>),
 }
 
+impl Expression {
+    pub fn declaration(&self) -> Option<(&Self, &Self)> {
+        match self {
+            Self::ReferenceDeclaration(lhs, rhs) | Self::ValueDeclaration(lhs, rhs) => {
+                Some((lhs.as_ref(), rhs.as_ref()))
+            }
+            _ => None,
+        }
+    }
+
+    pub fn is_atom(&self) -> bool {
+        match self {
+            Self::Int(_) | Self::Float(_) | Self::String(_) | Self::Variable(_) => true,
+            Self::Global(e) => e.is_atom(),
+            _ => false,
+        }
+    }
+
+    fn write_safe(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        if self.is_atom() {
+            write!(f, "{}", self)
+        } else {
+            write!(f, "({})", self)
+        }
+    }
+
+    fn write_arg_list(args: &[Self], f: &mut Formatter<'_>) -> std::fmt::Result {
+        if !args.is_empty() {
+            write!(f, " ")?;
+            let mut is_first = true;
+            for arg in args {
+                if !is_first {
+                    write!(f, ", ")?;
+                }
+                is_first = false;
+
+                arg.write_safe(f)?;
+            }
+        }
+        Ok(())
+    }
+}
+
+impl Display for Expression {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::ReferenceDeclaration(lhs, rhs) => write!(f, "{} | {}", lhs, rhs),
+            Self::ValueDeclaration(lhs, rhs) => write!(f, "{} : {}", lhs, rhs),
+            Self::FunctionCall(name, args) => {
+                write!(f, "{}", name)?;
+                Self::write_arg_list(args, f)
+            }
+            Self::MethodCall(obj, method, args) => {
+                obj.write_safe(f)?;
+                write!(f, " {}", method)?;
+                Self::write_arg_list(args, f)
+            }
+            Self::FunctionDefinition(args, body) => {
+                write!(f, "?F")?;
+                if !args.is_empty() {
+                    write!(f, "( ")?;
+                    let mut is_first = true;
+                    for arg in args {
+                        if !is_first {
+                            write!(f, ", ")?;
+                        }
+                        is_first = false;
+
+                        write!(f, "{}", arg)?;
+                    }
+                    write!(f, " )")?;
+                }
+
+                write!(f, " {}", body)
+            }
+            Self::Variable(v) => v.fmt(f),
+            Self::String(s) => write!(f, "\"{}\"", s),
+            Self::Int(i) => i.fmt(f),
+            Self::Float(n) => n.fmt(f),
+            Self::Global(e) => write!(f, "${}", e),
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub(super) struct Conditional(Expression, Block, Option<Box<Conditional>>); // if condition with zero or more else-ifs
+
+impl Display for Conditional {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "({}) {}", self.0, self.1)?;
+        if let Some(ref elseif) = self.2 {
+            write!(f, " {}", *elseif)?;
+        }
+
+        Ok(())
+    }
+}
 
 #[derive(Debug, Clone)]
 pub(super) enum Statement {
@@ -41,6 +205,27 @@ pub(super) enum Statement {
     Expression(Expression),
     Return,
     // TODO: loops, breaks, ternary
+}
+
+impl Display for Statement {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::ObjectInitialization(obj, block) => {
+                obj.write_safe(f)?;
+                write!(f, " @{}", block)?;
+            }
+            Self::Conditional(conditional, else_block) => {
+                write!(f, "?i {}", conditional)?;
+                if let Some(block) = else_block {
+                    write!(f, " {}", block)?;
+                }
+            }
+            Self::Expression(expr) => expr.fmt(f)?,
+            Self::Return => write!(f, "/return")?,
+        }
+
+        write!(f, ";")
+    }
 }
 
 pub(super) fn parser<'src>(
@@ -106,7 +291,7 @@ pub(super) fn parser<'src>(
     let stmt = recursive(|stmt| {
         let block = stmt
             .repeated()
-            .collect()
+            .collect::<Vec<_>>()
             .delimited_by(just('{'), just('}'))
             .padded();
 
@@ -154,7 +339,7 @@ pub(super) fn parser<'src>(
                         .or_not(),
                 )
                 .then(block.clone())
-                .map(|(a, b)| Expression::FunctionDefinition(a.unwrap_or_else(Vec::new), b));
+                .map(|(a, b)| Expression::FunctionDefinition(a.unwrap_or_else(Vec::new), b.into()));
 
             let function =
                 text::ident()
@@ -185,21 +370,21 @@ pub(super) fn parser<'src>(
                 .delimited_by(just('('), just(')'))
                 .then(block.clone())
                 .then(condition_block.or_not())
-                .map(|((c, b), e): ((Expression, Block), Option<Conditional>)| {
-                    Conditional(c, b, e.map(Box::new))
+                .map(|((c, b), e): ((Expression, Vec<_>), Option<Conditional>)| {
+                    Conditional(c, b.into(), e.map(Box::new))
                 })
         });
         let conditional = just("?i")
             .padded()
             .ignore_then(condition_block)
             .then(block.clone().or_not())
-            .map(|(c, b)| Statement::Conditional(c, b));
+            .map(|(c, b)| Statement::Conditional(c, b.map(Block)));
 
         let object_init = expr
             .clone()
             .then_ignore(just('@'))
             .then(block)
-            .map(|(e, b)| Statement::ObjectInitialization(e, b));
+            .map(|(e, b)| Statement::ObjectInitialization(e, b.into()));
 
         let return_stmt = just("/return").padded().to(Statement::Return);
 
@@ -212,7 +397,7 @@ pub(super) fn parser<'src>(
             .then_ignore(just(';').padded())
     });
 
-    stmt.repeated().collect()
+    stmt.repeated().collect().map(Block)
 }
 
 #[cfg(test)]
@@ -493,5 +678,23 @@ mod tests {
     fn test_return() {
         let stmt = one_statement(" /return ; ");
         assert!(matches!(stmt, Statement::Return));
+    }
+
+    #[test]
+    fn test_round_trip() {
+        let script = "\
+(#MyClass : #object) @{
+\t#a | 4;
+\t#b : 2.3;
+\t$GlobalFunc \"arg\";
+\t?i (1) {
+\t\t#c method;
+\t} {
+\t\tOtherFunc;
+\t};
+};";
+        let stmt = one_statement(script);
+        let formatted = stmt.to_string();
+        assert_eq!(formatted, script);
     }
 }
