@@ -1,10 +1,21 @@
 use std::fmt::{Display, Formatter};
 use std::ops::{Deref, DerefMut};
 
+use anyhow::{anyhow, Result};
 use chumsky::prelude::*;
+use itertools::Itertools;
 
 #[derive(Debug, Clone)]
 pub(super) struct Block(Vec<Statement>);
+
+impl Block {
+    /// Convert a top-level block to a string
+    ///
+    /// As opposed to the normal to_string, this doesn't include braces or any indentation.
+    pub fn to_string_top_level(&self) -> String {
+        self.0.iter().join("\n")
+    }
+}
 
 impl Display for Block {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
@@ -73,7 +84,7 @@ impl<'a> IntoIterator for &'a mut Block {
 //#endregion
 
 #[derive(Debug, PartialEq, Clone)]
-pub(super) struct Variable(String, Option<Box<Variable>>); // variable with zero or more attribute accesses
+pub(super) struct Variable(pub String, pub Option<Box<Variable>>); // variable with zero or more attribute accesses
 
 impl Display for Variable {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
@@ -101,6 +112,16 @@ pub(super) enum Expression {
 }
 
 impl Expression {
+    pub fn into_declaration(self) -> Option<(Self, Self)> {
+        match self {
+            Self::ReferenceDeclaration(lhs, rhs) | Self::ValueDeclaration(lhs, rhs) => {
+                Some((*lhs, *rhs))
+            }
+            Self::Global(e) => e.into_declaration(),
+            _ => None,
+        }
+    }
+
     pub fn declaration(&self) -> Option<(&Self, &Self)> {
         match self {
             Self::ReferenceDeclaration(lhs, rhs) | Self::ValueDeclaration(lhs, rhs) => {
@@ -403,7 +424,43 @@ pub(super) fn parser<'src>(
         conditional.or(return_stmt).or(object_init).or(stmt_expr)
     });
 
-    stmt.repeated().collect().map(Block)
+    stmt.repeated().collect().then_ignore(end()).map(Block)
+}
+
+fn get_line_number(text: &str, index: usize) -> (usize, usize) {
+    let fragment = &text[..index];
+    let line_start = fragment.rfind('\n').unwrap_or(0);
+    let line_num = fragment.matches('\n').count() + 1;
+    (line_num, index - line_start)
+}
+
+pub(super) fn parse<T: AsRef<str>>(script: T) -> Result<Block> {
+    let script = script.as_ref();
+    parser()
+        .parse(script)
+        .into_result()
+        .map_err(|errors| {
+            anyhow!(
+                "Script parsing failed:\n{}",
+                errors
+                    .into_iter()
+                    .map(|e| {
+                        let span = e.span();
+                        let (start_line, start_char) = get_line_number(script, span.start);
+                        let (end_line, end_char) = get_line_number(script, span.end);
+                        format!(
+                            "{} (line {}:{} to line {}:{})",
+                            e.reason(),
+                            start_line,
+                            start_char,
+                            end_line,
+                            end_char
+                        )
+                    })
+                    .join("\n")
+            )
+        })
+        .into()
 }
 
 #[cfg(test)]

@@ -1,12 +1,14 @@
+use std::collections::HashMap;
 use std::str::FromStr;
 
-use encoding_rs::*;
+use anyhow::Result;
 use strum::{EnumIter, EnumString};
 
 mod parser;
+use parser::{Expression, Statement, Variable};
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash, EnumString, EnumIter)]
-enum EnumType {
+pub enum EnumType {
     #[strum(serialize = "MTAS")]
     Animation,
     #[strum(serialize = "CHID")]
@@ -104,15 +106,15 @@ fn start_line(
 ///
 /// # Arguments
 ///
-/// * `script` - The Shift JIS-encoded script text
+/// * `text` - The script text
 /// * `tab_width` - If None, the script will be indented with tabs. Otherwise, it will be indented with
 ///   this many spaces per indentation level.
 ///
 /// # Returns
 ///
 /// The formatted script as a UTF-8 string.
-pub fn format_script(script: &[u8], tab_width: Option<usize>) -> String {
-    let text = SHIFT_JIS.decode(script).0;
+pub fn format_script<T: AsRef<str>>(text: T, tab_width: Option<usize>) -> String {
+    let text = text.as_ref();
     let mut output = String::with_capacity(text.len());
 
     let mut in_string = false;
@@ -178,16 +180,16 @@ pub fn format_script(script: &[u8], tab_width: Option<usize>) -> String {
 
 /// Minify a previously-formatted script for storage in volume.dat.
 ///
-/// Converts the script from UTF-8 to Shift JIS, removes newlines and indentation, and collapses whitespace.
+/// Removes newlines and indentation and collapses whitespace.
 ///
 /// # Arguments
 ///
-/// * `script` - The formatted script text as a UTF-8 string
+/// * `script` - The formatted script text
 ///
 /// # Returns
 ///
-/// The minified script encoded in Shift JIS
-pub fn unformat_script(script: &str) -> Vec<u8> {
+/// The minified script
+pub fn unformat_script(script: &str) -> String {
     let mut minified = String::with_capacity(script.len());
     let mut in_string = false;
     let mut in_space = false;
@@ -211,5 +213,45 @@ pub fn unformat_script(script: &str) -> Vec<u8> {
         }
     }
 
-    SHIFT_JIS.encode(&minified).0.to_vec()
+    minified
+}
+
+pub fn parse_config<T: AsRef<str>>(script: T) -> Result<HashMap<(EnumType, i32), String>> {
+    let parsed = parser::parse(script)?;
+    let mut map = HashMap::new();
+    let declarations = parsed.into_iter().filter_map(|s| match s {
+        Statement::Expression(e) => e.into_declaration(),
+        _ => None,
+    });
+    for (name_expr, value_expr) in declarations {
+        let Expression::Variable(Variable(name, None)) = name_expr else {
+            continue;
+        };
+
+        let Expression::Int(value) = value_expr else {
+            continue;
+        };
+
+        let Some(constant_type) = EnumType::get_constant_type(&name) else {
+            continue;
+        };
+
+        map.insert((constant_type, value), name);
+    }
+
+    Ok(map)
+}
+
+pub fn parse_format_script<T: AsRef<str>>(
+    script: T,
+    tab_width: Option<usize>,
+    config: Option<HashMap<(EnumType, i32), String>>,
+) -> Result<String> {
+    let mut block = parser::parse(script)?;
+    if let Some(constants) = config {}
+    let text = block.to_string_top_level();
+    Ok(match tab_width {
+        Some(num_spaces) => text.replace('\t', " ".repeat(num_spaces).as_str()),
+        None => text,
+    })
 }

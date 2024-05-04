@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::fs::File;
@@ -6,30 +7,54 @@ use std::path::{Path, PathBuf};
 use std::process;
 use std::str::FromStr;
 
-use anyhow::{anyhow, Error, Result};
+use anyhow::{anyhow, Result};
 use clap::{arg, Command};
+use encoding_rs::SHIFT_JIS;
+use strum::EnumString;
 use walkdir::WalkDir;
 
 use samurai::texture::{PictureImageFile, StackDirection};
 use samurai::volume::{hash_name, Volume, DEFAULT_MAX_OBJECTS};
 use samurai::{script, Readable};
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, EnumString)]
 enum UnorderedBehavior {
+    #[strum(serialize = "fail")]
     Fail,
+    #[strum(serialize = "ignore")]
     Ignore,
+    #[strum(serialize = "append")]
     Append,
 }
 
-impl FromStr for UnorderedBehavior {
-    type Err = Error;
+#[derive(Clone, Copy, Debug, EnumString)]
+enum Encoding {
+    #[strum(serialize = "utf-8")]
+    Utf8,
+    #[strum(serialize = "shift-jis")]
+    ShiftJis,
+    #[strum(serialize = "detect")]
+    Detect,
+}
 
-    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
-        match s {
-            "fail" => Ok(Self::Fail),
-            "ignore" => Ok(Self::Ignore),
-            "append" => Ok(Self::Append),
-            _ => Err(anyhow!("Unknown UnorderedBehavior {}", s)),
+impl Encoding {
+    fn convert_from<'a>(&self, raw: &'a [u8]) -> Cow<'a, str> {
+        match self {
+            Self::Utf8 => String::from_utf8_lossy(raw),
+            Self::ShiftJis => SHIFT_JIS.decode(raw).0,
+            Self::Detect => {
+                let label = chardet::detect(raw).0;
+                let encoding = encoding_rs::Encoding::for_label(label.as_bytes()).unwrap();
+                encoding.decode(raw).0
+            }
+        }
+    }
+
+    fn convert_to<'a>(&self, text: &'a str) -> Cow<'a, [u8]> {
+        match self {
+            Self::Utf8 => Cow::Borrowed(text.as_bytes()),
+            Self::ShiftJis => SHIFT_JIS.encode(text).0,
+            Self::Detect => panic!("Can't detect to-encoding"),
         }
     }
 }
@@ -74,9 +99,6 @@ fn cli() -> Command {
                     Command::new("pack")
                         .about("Pack one or more directories into a volume")
                         .arg(
-                            arg!(-u --"unformat-scripts" "Reverse the effect of formatting scripts when the volume was unpacked")
-                        )
-                        .arg(
                             arg!(-m --"max-objects" <MAX> "Maximum number of objects to reserve space for in the volume header")
                                 .value_parser(clap::value_parser!(u32))
                         )
@@ -99,14 +121,6 @@ fn cli() -> Command {
                 .subcommand(
                     Command::new("unpack")
                         .about("Unpack the contents of volume.dat")
-                        .arg(
-                            arg!(-f --"format-scripts" "Format scripts for readability")
-                        )
-                        .arg(
-                            arg!(-t --"tab-width" <WIDTH> "If provided, lines will be indented with the requested number of spaces instead of tabs")
-                                .value_parser(clap::value_parser!(usize))
-                                .requires("format-scripts")
-                        )
                         .arg(
                             arg!(-v --verbose "Print a listing of files as they're unpacked")
                         )
@@ -134,6 +148,19 @@ fn cli() -> Command {
                                 .value_parser(clap::value_parser!(usize))
                         )
                         .arg(
+                            arg!(-s --simple "Use the simple formatter instead of fully parsing the script and regenerating from the AST. Mutually exclusive with --config.")
+                                .conflicts_with("config")
+                        )
+                        .arg(
+                            arg!(-c --config <CONFIG> "Path to config.h. If provided, an include will be added and literal function arguments will be replaced with symbolic constants where appropriate.")
+                                .value_parser(clap::value_parser!(PathBuf))
+                        )
+                        .arg(
+                            arg!(-e --encoding <ENCODING> "The encoding of the input file. Can be utf-8, shift-jis, or detect. The output will always be UTF-8.")
+                                .value_parser(["utf-8", "shift-jis", "detect"])
+                                .default_value("detect")
+                        )
+                        .arg(
                             arg!(<SCRIPT> "Path to script file")
                                 .value_parser(clap::value_parser!(PathBuf)),
                         )
@@ -145,6 +172,11 @@ fn cli() -> Command {
                 .subcommand(
                     Command::new("unformat")
                         .about("Unformat a previously-formatted script for storage in volume.dat")
+                        .arg(
+                            arg!(-e --encoding <ENCODING> "The encoding of the output file. Can be utf-8 or shift-jis. The input file must always be UTF-8.")
+                                .value_parser(["utf-8", "shift-jis"])
+                                .default_value("shift-jis")
+                        )
                         .arg(
                             arg!(<SCRIPT> "Path to script file")
                                 .value_parser(clap::value_parser!(PathBuf)),
@@ -238,8 +270,6 @@ fn validate_volume(path: &Path, quiet: bool) -> Result<()> {
 fn unpack_volume<S: AsRef<str>>(
     volume_path: &Path,
     extract_path: &Path,
-    format_scripts: bool,
-    tab_width: Option<usize>,
     prefixes: Option<&[S]>,
     verbose: bool,
 ) -> Result<()> {
@@ -267,38 +297,17 @@ fn unpack_volume<S: AsRef<str>>(
             }
         }
 
-        let mut output_path = extract_path.to_path_buf();
-        let mut is_script = None;
-        for dir in name.split(&['/', '\\']) {
-            if is_script.is_none() {
-                is_script = Some(dir == "script");
-            }
-            output_path = output_path.join(dir);
-        }
-        let is_script = is_script.unwrap_or(false);
-
+        let output_path = extract_path.to_path_buf();
         if let Some(parent) = output_path.parent() {
             if !parent.exists() {
                 fs::create_dir_all(parent)?;
             }
         }
 
-        if is_script && format_scripts {
-            fs::write(&output_path, script::format_script(data, tab_width))?;
+        fs::write(&output_path, data)?;
 
-            if verbose {
-                println!(
-                    "Formatted script file {} and extracted to {}",
-                    name,
-                    output_path.display()
-                );
-            }
-        } else {
-            fs::write(&output_path, data)?;
-
-            if verbose {
-                println!("Extracted {} to {}", name, output_path.display());
-            }
+        if verbose {
+            println!("Extracted {} to {}", name, output_path.display());
         }
     }
 
@@ -308,7 +317,6 @@ fn unpack_volume<S: AsRef<str>>(
 fn pack_volume<T: AsRef<Path>, I: Iterator<Item = T>>(
     volume_path: &Path,
     import_paths: I,
-    unformat_scripts: bool,
     max_objects: u32,
     verbose: bool,
     order_path: Option<&Path>,
@@ -335,16 +343,12 @@ fn pack_volume<T: AsRef<Path>, I: Iterator<Item = T>>(
                 continue;
             };
 
-            let is_script = relative
-                .iter()
-                .next()
-                .map_or(false, |d| d.to_string_lossy() == "script");
             // volume.dat always uses backslashes
             let volume_name = relative.to_string_lossy().replace('/', "\\");
             if !volume_names.insert(volume_name.clone()) {
                 return Err(anyhow!("Duplicate input filename {}", volume_name));
             }
-            paths.push((path.to_path_buf(), volume_name, is_script));
+            paths.push((path.to_path_buf(), volume_name));
         }
     }
 
@@ -369,7 +373,7 @@ fn pack_volume<T: AsRef<Path>, I: Iterator<Item = T>>(
                 .map(|(i, n)| (n, i))
                 .collect();
 
-            let mut new_paths = vec![(PathBuf::new(), String::new(), false); paths.len()];
+            let mut new_paths = vec![(PathBuf::new(), String::new()); paths.len()];
             let mut num_appended = 0usize;
             for path_info in paths {
                 let new_index = {
@@ -403,21 +407,13 @@ fn pack_volume<T: AsRef<Path>, I: Iterator<Item = T>>(
         }
     };
 
-    for (path, volume_name, is_script) in paths {
-        let (data, verbose_prefix) = if is_script && unformat_scripts {
-            (
-                script::unformat_script(&fs::read_to_string(&path)?),
-                "Unformatted and packed script file",
-            )
-        } else {
-            (fs::read(&path)?, "Packed")
-        };
+    for (path, volume_name) in paths {
+        let data = fs::read(&path)?;
 
         let hash = volume.add(volume_name.clone(), data)?;
         if verbose {
             println!(
-                "{} {} as {} (hash {:08X})",
-                verbose_prefix,
+                "Packed {} as {} (hash {:08X})",
                 path.display(),
                 volume_name,
                 hash
@@ -434,8 +430,26 @@ fn format_script(
     script_path: &Path,
     output_path: Option<&Path>,
     tab_width: Option<usize>,
+    use_simple_parser: bool,
+    config_path: Option<&Path>,
+    encoding: Encoding,
 ) -> Result<()> {
-    let formatted = script::format_script(&fs::read(script_path)?, tab_width);
+    let raw = fs::read(script_path)?;
+    let text = encoding.convert_from(&raw);
+
+    let formatted = if use_simple_parser {
+        script::format_script(text, tab_width)
+    } else {
+        let config = match config_path {
+            Some(path) => {
+                let config_text = fs::read_to_string(path)?;
+                Some(script::parse_config(config_text)?)
+            }
+            None => None,
+        };
+        script::parse_format_script(text, tab_width, config)?
+    };
+
     if let Some(output_path) = output_path {
         fs::write(output_path, formatted)?;
     } else {
@@ -445,8 +459,13 @@ fn format_script(
     Ok(())
 }
 
-fn unformat_script(script_path: &Path, output_path: Option<&Path>) -> Result<()> {
-    let raw = script::unformat_script(&fs::read_to_string(script_path)?);
+fn unformat_script(
+    script_path: &Path,
+    output_path: Option<&Path>,
+    encoding: Encoding,
+) -> Result<()> {
+    let text = script::unformat_script(&fs::read_to_string(script_path)?);
+    let raw = encoding.convert_to(&text);
     if let Some(output_path) = output_path {
         fs::write(output_path, raw)?;
     } else {
@@ -572,7 +591,6 @@ fn main() -> Result<()> {
                         .unwrap(),
                 )?;
 
-                let unformat_scripts = pack_matches.get_flag("unformat-scripts");
                 let max_objects = pack_matches
                     .get_one::<u32>("max-objects")
                     .copied()
@@ -582,7 +600,6 @@ fn main() -> Result<()> {
                 pack_volume(
                     volume_path,
                     import_paths,
-                    unformat_scripts,
                     max_objects,
                     verbose,
                     order_path,
@@ -603,15 +620,11 @@ fn main() -> Result<()> {
                     .map(|v| v.map(|s| s.replace('/', "\\")).collect())
                     .unwrap_or(vec![]);
 
-                let format_scripts = unpack_matches.get_flag("format-scripts");
-                let tab_width = unpack_matches.get_one::<usize>("tab-width");
                 let verbose = unpack_matches.get_flag("verbose");
 
                 unpack_volume(
                     volume_path,
                     extract_path,
-                    format_scripts,
-                    tab_width.copied(),
                     if prefixes.is_empty() {
                         None
                     } else {
@@ -629,10 +642,19 @@ fn main() -> Result<()> {
                     .expect("Path to script file is required");
                 let output_path = format_matches.get_one::<PathBuf>("OUTPUT");
                 let tab_width = format_matches.get_one::<usize>("tab-width");
+
+                let use_simple_parser = format_matches.get_flag("simple");
+                let config_path = format_matches.get_one::<PathBuf>("config");
+                let encoding =
+                    Encoding::from_str(format_matches.get_one::<String>("encoding").unwrap())?;
+
                 format_script(
                     script_path,
                     output_path.map(PathBuf::as_path),
                     tab_width.copied(),
+                    use_simple_parser,
+                    config_path.map(PathBuf::as_path),
+                    encoding,
                 )?;
             }
             Some(("unformat", unformat_matches)) => {
@@ -640,7 +662,10 @@ fn main() -> Result<()> {
                     .get_one::<PathBuf>("SCRIPT")
                     .expect("Path to script file is required");
                 let output_path = unformat_matches.get_one::<PathBuf>("OUTPUT");
-                unformat_script(script_path, output_path.map(PathBuf::as_path))?;
+                let encoding =
+                    Encoding::from_str(unformat_matches.get_one::<String>("encoding").unwrap())?;
+
+                unformat_script(script_path, output_path.map(PathBuf::as_path), encoding)?;
             }
             _ => unreachable!(),
         },
