@@ -106,6 +106,7 @@ impl Expression {
             Self::ReferenceDeclaration(lhs, rhs) | Self::ValueDeclaration(lhs, rhs) => {
                 Some((lhs.as_ref(), rhs.as_ref()))
             }
+            Self::Global(e) => e.declaration(),
             _ => None,
         }
     }
@@ -289,10 +290,12 @@ pub(super) fn parser<'src>(
     let atom = var.or(string).or(neg_num).or(num);
 
     let stmt = recursive(|stmt| {
-        let block = stmt
-            .repeated()
-            .collect::<Vec<_>>()
-            .delimited_by(just('{'), just('}'))
+        // I used to use delimited_by here, but that seemed to require at least one statement in the
+        // block to parse correctly, and we need to support empty blocks
+        let block = just('{')
+            .padded()
+            .ignore_then(stmt.repeated().collect::<Vec<_>>())
+            .then_ignore(just('}').padded())
             .padded();
 
         let expr = recursive(|expr| {
@@ -365,6 +368,8 @@ pub(super) fn parser<'src>(
                 .padded()
         });
 
+        let semicolon = just(';').padded();
+
         let condition_block = recursive(|condition_block| {
             expr.clone()
                 .delimited_by(just('('), just(')'))
@@ -378,23 +383,24 @@ pub(super) fn parser<'src>(
             .padded()
             .ignore_then(condition_block)
             .then(block.clone().or_not())
+            .then_ignore(semicolon.or_not())
             .map(|(c, b)| Statement::Conditional(c, b.map(Block)));
 
         let object_init = expr
             .clone()
             .then_ignore(just('@'))
             .then(block)
+            .then_ignore(semicolon)
             .map(|(e, b)| Statement::ObjectInitialization(e, b.into()));
 
-        let return_stmt = just("/return").padded().to(Statement::Return);
+        let return_stmt = just("/return")
+            .padded()
+            .then_ignore(semicolon)
+            .to(Statement::Return);
 
-        let stmt_expr = expr.map(Statement::Expression);
+        let stmt_expr = expr.then_ignore(semicolon).map(Statement::Expression);
 
-        conditional
-            .or(return_stmt)
-            .or(object_init)
-            .or(stmt_expr)
-            .then_ignore(just(';').padded())
+        conditional.or(return_stmt).or(object_init).or(stmt_expr)
     });
 
     stmt.repeated().collect().map(Block)
@@ -696,5 +702,20 @@ mod tests {
         let stmt = one_statement(script);
         let formatted = stmt.to_string();
         assert_eq!(formatted, script);
+    }
+
+    #[test]
+    fn test_if_no_semicolon() {
+        let parser = parser();
+        let result = parser
+            .parse(
+                "\
+?i(#a eq 1) {
+} ?i (#a eq 2) {
+}
+",
+            )
+            .unwrap();
+        assert_eq!(result.len(), 2);
     }
 }
