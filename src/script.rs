@@ -2,10 +2,12 @@ use std::collections::HashMap;
 use std::str::FromStr;
 
 use anyhow::Result;
+use common_macros::hash_map;
+use lazy_static::lazy_static;
 use strum::{EnumIter, EnumString};
 
 mod parser;
-use parser::{Expression, Statement, Variable};
+use parser::{Block, Conditional, Expression, Statement, Variable};
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash, EnumString, EnumIter)]
 pub enum EnumType {
@@ -29,8 +31,6 @@ pub enum EnumType {
     Event,
     #[strum(serialize = "EFFECT")]
     Effect,
-    #[strum(serialize = "FADE")]
-    Fade,
     #[strum(serialize = "CAMERA")]
     Camera,
     #[strum(serialize = "WATCH")]
@@ -57,9 +57,17 @@ pub enum EnumType {
     Button,
     #[strum(serialize = "OBJECT")]
     ObjectSet,
-    // these two don't follow the normal naming convention and need special handling
+    // these don't follow the normal naming convention and need special handling
     Boolean,
     Relation,
+    FadeDir,
+    FadeType,
+    Initialize,
+    Null,
+    Any,               // any other type not identified above
+    Repeat,            // repeat the previous type (for vararg functions)
+    SendFuncSelect,    // select the type of the next argument to SendFunc
+    SendFuncCharacter, // either a character ID or null depending on the first arg
 }
 
 impl EnumType {
@@ -67,6 +75,11 @@ impl EnumType {
         match constant {
             "ON" | "OFF" => Some(Self::Boolean),
             "NO_RELATION" | "ENEMY_RELATION" | "FRIEND_RELATION" => Some(Self::Relation),
+            "INIT" => Some(Self::Initialize),
+            "NULL" => Some(Self::Null),
+            "FADE_IN_INIT" | "FADE_IN" | "FADE_OUT" => Some(Self::FadeDir),
+            "FADE_NORMAL" | "FADE_SPECIAL" => Some(Self::FadeType),
+            "SAY_WEAPON_ON" | "SAY_WEAPON_OFF" => Some(Self::Command),
             _ => {
                 let index = constant
                     .match_indices('_')
@@ -77,6 +90,86 @@ impl EnumType {
             }
         }
     }
+}
+
+lazy_static! {
+    static ref SIGNATURES: HashMap<&'static str, Vec<EnumType>> = hash_map! {
+        "DelAIChar" => vec![EnumType::Character],
+        "SetAIChar" => vec![EnumType::Character, EnumType::Ai],
+        "GetAIChar" => vec![EnumType::Character],
+        "SetAITargetItem" => vec![EnumType::Character, EnumType::Object],
+        "SetCharPos" => vec![EnumType::Character],
+        "SetCharDir" => vec![EnumType::Character, EnumType::Character],
+        "SetCharDir2" => vec![EnumType::Character],
+        "SetAIBackLimit" => vec![EnumType::Character],
+        "SetAIWalkLimit" => vec![EnumType::Character],
+        "SetAISiegeLimit" => vec![EnumType::Character],
+        "SetAIRunLimit" => vec![EnumType::Character],
+        "SetSoloCamera" => vec![EnumType::Character],
+        "SetFixCamera" => vec![EnumType::Character],
+        "Say" => vec![EnumType::Character, EnumType::Character, EnumType::Any, EnumType::Any, EnumType::Any, EnumType::Say],
+        "SetSayMotion" => vec![EnumType::Character, EnumType::Command],
+        "SetTalkSelect" => vec![EnumType::Character],
+        "SetTimeAction" => vec![EnumType::Character, EnumType::Character],
+        "SetCharAction" => vec![EnumType::Character, EnumType::Command],
+        "SetAICharMove" => vec![EnumType::Character],
+        "SetEventMode" => vec![EnumType::Character, EnumType::Event, EnumType::Repeat],
+        "SubEventMode" => vec![EnumType::Character, EnumType::Event, EnumType::Repeat],
+        "GetCharPos" => vec![EnumType::Character],
+        "SetCharDraw" => vec![EnumType::Character, EnumType::Boolean],
+        "AddSamuraiValue" => vec![EnumType::Character],
+        "SubSamuraiValue" => vec![EnumType::Character],
+        "SetLineAction" => vec![EnumType::Character],
+        "SetMapID" => vec![EnumType::Map],
+        "SetCharLevel" => vec![EnumType::Character],
+        "SetEventUseCharList" => vec![EnumType::Character, EnumType::Repeat],
+        "SetCharDrawOnList" => vec![EnumType::Character, EnumType::Repeat],
+        "SetCharDrawOffList" => vec![EnumType::Character, EnumType::Repeat],
+        "SetAddCharScript" => vec![EnumType::Character],
+        "SetCharNoCollMode" => vec![EnumType::Character, EnumType::Boolean],
+        "SetAIGroupRelation" => vec![EnumType::Footing, EnumType::Footing, EnumType::Relation],
+        "SendFunc" => vec![EnumType::Any, EnumType::SendFuncCharacter],
+        "SendFunc2" => vec![EnumType::Any, EnumType::SendFuncCharacter],
+        "SetAddCharScriptList" => vec![EnumType::Any, EnumType::Character, EnumType::Repeat],
+        "SetCharNeckAction" => vec![EnumType::Character],
+        "SetCharFace" => vec![EnumType::Character, EnumType::Animation],
+        "SetObjDraw" => vec![EnumType::Object, EnumType::Boolean],
+        "SetCharGroupID" => vec![EnumType::Character, EnumType::Footing],
+        "SetCharLife" => vec![EnumType::Character],
+        "SetCharHiFaceMode" => vec![EnumType::Character, EnumType::Boolean],
+        "SetPosLineAction" => vec![EnumType::Character],
+        "SetAIAllStop" => vec![EnumType::Boolean],
+        "SetCharForm" => vec![EnumType::Character],
+        "SetCutCamera" => vec![EnumType::Camera],
+        "SetCharFriendFlag" => vec![EnumType::Character, EnumType::Friend],
+        "SetCameraPos" => vec![EnumType::Camera],
+        "SetSayPos" => vec![EnumType::Character],
+        "SetCharMove" => vec![EnumType::Character, EnumType::Command],
+        "SetCharShowList" => vec![EnumType::Character, EnumType::Repeat],
+        "SetCharTarget" => vec![EnumType::Character, EnumType::Character],
+        "GetCharDead" => vec![EnumType::Character],
+        "SetMapTimeID" => vec![EnumType::Time],
+        "SetCharWatch" => vec![EnumType::Character],
+        "SetCharPosFixMode" => vec![EnumType::Character, EnumType::Boolean],
+        "SetObjMoveTetudo" => vec![EnumType::Boolean],
+        "SetCharNoDamageMode" => vec![EnumType::Character, EnumType::Boolean],
+        "ScreenEffect" => vec![EnumType::Effect, EnumType::FadeDir, EnumType::FadeType],
+        "SetEventProFlag" => vec![EnumType::Any, EnumType::EventProgress],
+        "VoicePlay" => vec![EnumType::Any, EnumType::Any, EnumType::Character],
+        "StartCharTrace" => vec![EnumType::Character, EnumType::Character, EnumType::Command],
+        "SetPadMode" => vec![EnumType::Boolean],
+        "SetObjAction" => vec![EnumType::Object],
+        "GetCharThrowCount" => vec![EnumType::Character],
+        "GetCharStatus" => vec![EnumType::Character, EnumType::Event],
+        "AddCharDaikonFlag" => vec![EnumType::Character],
+        "SubCharDaikonFlag" => vec![EnumType::Character],
+        "GetObjChar" => vec![EnumType::Character],
+        "ClearFrontEvent" => vec![EnumType::Character],
+        "GetDamageKind" => vec![EnumType::Character],
+        "AddEventMode" => vec![EnumType::Character, EnumType::Event, EnumType::Repeat],
+        "SetCharWaiting" => vec![EnumType::Character],
+        "SetCharDeathBlow" => vec![EnumType::Character],
+    };
 }
 
 fn start_line(
@@ -242,13 +335,126 @@ pub fn parse_config<T: AsRef<str>>(script: T) -> Result<HashMap<(EnumType, i32),
     Ok(map)
 }
 
+fn iter_signature(sig: &[EnumType]) -> impl Iterator<Item = EnumType> + '_ {
+    let (slice, repeat_type) = if *sig.last().unwrap() == EnumType::Repeat {
+        (&sig[..sig.len() - 1], sig[sig.len() - 2])
+    } else {
+        (sig, EnumType::Any)
+    };
+    slice.iter().copied().chain(std::iter::repeat(repeat_type))
+}
+
+fn process_block(block: &mut Block, config: &HashMap<(EnumType, i32), String>) -> bool {
+    let mut made_changes = false;
+    for stmt in block.iter_mut() {
+        match stmt {
+            Statement::ObjectInitialization(_, init_block) => {
+                made_changes = process_block(init_block, config) || made_changes;
+            }
+            Statement::Conditional(conditional, else_block) => {
+                let mut condition = Some(conditional);
+                while let Some(Conditional(_, condition_block, next_condition)) = condition {
+                    made_changes = process_block(condition_block, config) || made_changes;
+                    condition = next_condition.as_deref_mut();
+                }
+                if let Some(else_block) = else_block {
+                    made_changes = process_block(else_block, config) || made_changes;
+                }
+            }
+            Statement::Expression(expr) => {
+                let is_global = matches!(expr, Expression::Global(_));
+                let expr = expr.unwrap_global_mut();
+
+                // first, process any function definitions that occur in this expression
+                for inner_block in expr.inner_blocks_mut() {
+                    made_changes = process_block(inner_block, config) || made_changes;
+                }
+
+                if !is_global {
+                    // we're currently only interested in calls to global functions
+                    continue;
+                }
+
+                let Expression::FunctionCall(name, args) = expr else {
+                    continue;
+                };
+
+                let Some(signature) = SIGNATURES.get(name.as_str()) else {
+                    continue;
+                };
+
+                let mut send_func_select = 0;
+                for (arg_expr, arg_type) in args.iter_mut().zip(iter_signature(signature)) {
+                    let &Expression::Int(arg_value) = arg_expr.unwrap_global() else {
+                        continue;
+                    };
+
+                    let actual_type = match arg_type {
+                        EnumType::Any => continue,
+                        EnumType::Repeat => unreachable!(),
+                        EnumType::SendFuncSelect => {
+                            send_func_select = arg_value;
+                            continue;
+                        }
+                        EnumType::SendFuncCharacter => {
+                            if send_func_select == 1 {
+                                EnumType::Null
+                            } else {
+                                EnumType::Character
+                            }
+                        }
+                        _ => arg_type,
+                    };
+
+                    let Some(constant) =
+                        config
+                            .get(&(actual_type, arg_value))
+                            .or_else(|| match arg_value {
+                                -1 => config.get(&(EnumType::Initialize, -1)),
+                                _ => None,
+                            })
+                    else {
+                        println!(
+                            "Warning: unexpected argument value {} in call to {}",
+                            arg_value, name
+                        );
+                        continue;
+                    };
+
+                    // if we found a match for a symbolic constant, replace the literal expression with one
+                    // referencing the constant
+                    *arg_expr = Expression::Global(Box::new(Expression::Variable(Variable(
+                        constant.clone(),
+                        None,
+                    ))));
+                    made_changes = true;
+                }
+            }
+            _ => (),
+        }
+    }
+
+    made_changes
+}
+
 pub fn parse_format_script<T: AsRef<str>>(
     script: T,
     tab_width: Option<usize>,
     config: Option<HashMap<(EnumType, i32), String>>,
 ) -> Result<String> {
     let mut block = parser::parse(script)?;
-    if let Some(constants) = config {}
+    if let Some(constants) = config {
+        if process_block(&mut block, &constants) {
+            // if we actually made changes, insert an include of config.h at the beginning of the script
+            block.insert(
+                0,
+                Statement::Expression(Expression::Global(Box::new(Expression::FunctionCall(
+                    String::from("Include"),
+                    vec![Expression::String(String::from("config.h"))],
+                )))),
+            );
+        }
+    }
     let text = block.to_string_top_level();
     Ok(match tab_width {
         Some(num_spaces) => text.replace('\t', " ".repeat(num_spaces).as_str()),

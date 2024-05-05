@@ -22,12 +22,12 @@ impl Display for Block {
         if self.is_empty() {
             write!(f, "{{ }}")
         } else {
-            write!(f, "{{\n")?;
+            writeln!(f, "{{")?;
             for stmt in self {
                 // for proper indentation, we need to first write the statement to a temp
                 // string, as statements can contain multiple lines and nested blocks
                 let stmt_string = stmt.to_string();
-                write!(f, "\t{}\n", stmt_string.replace('\n', "\n\t"))?;
+                writeln!(f, "\t{}", stmt_string.replace('\n', "\n\t"))?;
             }
             write!(f, "}}")
         }
@@ -122,13 +122,33 @@ impl Expression {
         }
     }
 
-    pub fn declaration(&self) -> Option<(&Self, &Self)> {
+    pub fn inner_blocks_mut(&mut self) -> Vec<&mut Block> {
         match self {
-            Self::ReferenceDeclaration(lhs, rhs) | Self::ValueDeclaration(lhs, rhs) => {
-                Some((lhs.as_ref(), rhs.as_ref()))
+            Expression::ReferenceDeclaration(_, rhs) | Expression::ValueDeclaration(_, rhs) => {
+                rhs.inner_blocks_mut()
             }
-            Self::Global(e) => e.declaration(),
-            _ => None,
+            // I don't know if there's any situation where passing a function definition as an argument makes sense, but we'll support it anyway
+            Expression::FunctionCall(_, args) | Expression::MethodCall(_, _, args) => args
+                .iter_mut()
+                .flat_map(|a| a.inner_blocks_mut().into_iter())
+                .collect(),
+            Expression::FunctionDefinition(_, block) => vec![block],
+            Expression::Global(e) => e.inner_blocks_mut(),
+            _ => vec![],
+        }
+    }
+
+    pub fn unwrap_global(&self) -> &Self {
+        match self {
+            Self::Global(e) => e.unwrap_global(),
+            _ => self,
+        }
+    }
+
+    pub fn unwrap_global_mut(&mut self) -> &mut Self {
+        match self {
+            Self::Global(e) => e.unwrap_global_mut(),
+            _ => self,
         }
     }
 
@@ -172,8 +192,17 @@ impl Display for Expression {
             Self::ReferenceDeclaration(lhs, rhs) => write!(f, "{} | {}", lhs, rhs),
             Self::ValueDeclaration(lhs, rhs) => write!(f, "{} : {}", lhs, rhs),
             Self::FunctionCall(name, args) => {
+                // as a convention, list definitions are always in parentheses
+                let is_list = name == "list";
+                if is_list {
+                    write!(f, "(")?;
+                }
                 write!(f, "{}", name)?;
-                Self::write_arg_list(args, f)
+                Self::write_arg_list(args, f)?;
+                if is_list {
+                    write!(f, ")")?;
+                }
+                Ok(())
             }
             Self::MethodCall(obj, method, args) => {
                 obj.write_safe(f)?;
@@ -208,7 +237,7 @@ impl Display for Expression {
 }
 
 #[derive(Debug, Clone)]
-pub(super) struct Conditional(Expression, Block, Option<Box<Conditional>>); // if condition with zero or more else-ifs
+pub(super) struct Conditional(pub Expression, pub Block, pub Option<Box<Conditional>>); // if condition with zero or more else-ifs
 
 impl Display for Conditional {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
@@ -417,15 +446,18 @@ pub(super) fn parser<'src>(
             .clone()
             .then_ignore(just('@'))
             .then(block)
-            .then_ignore(semicolon)
+            .then_ignore(semicolon.or_not())
             .map(|(e, b)| Statement::ObjectInitialization(e, b.into()));
 
         let return_stmt = just("/return")
             .padded()
-            .then_ignore(semicolon)
+            // the last statement in a block doesn't have to have a semicolon
+            .then_ignore(semicolon.or(just('}').padded().rewind()))
             .to(Statement::Return);
 
-        let stmt_expr = expr.then_ignore(semicolon).map(Statement::Expression);
+        let stmt_expr = expr
+            .then_ignore(semicolon.or(just('}').padded().rewind()))
+            .map(Statement::Expression);
 
         conditional.or(return_stmt).or(object_init).or(stmt_expr)
     });
@@ -442,31 +474,27 @@ fn get_line_number(text: &str, index: usize) -> (usize, usize) {
 
 pub(super) fn parse<T: AsRef<str>>(script: T) -> Result<Block> {
     let script = script.as_ref();
-    parser()
-        .parse(script)
-        .into_result()
-        .map_err(|errors| {
-            anyhow!(
-                "Script parsing failed:\n{}",
-                errors
-                    .into_iter()
-                    .map(|e| {
-                        let span = e.span();
-                        let (start_line, start_char) = get_line_number(script, span.start);
-                        let (end_line, end_char) = get_line_number(script, span.end);
-                        format!(
-                            "{} (line {}:{} to line {}:{})",
-                            e.reason(),
-                            start_line,
-                            start_char,
-                            end_line,
-                            end_char
-                        )
-                    })
-                    .join("\n")
-            )
-        })
-        .into()
+    parser().parse(script).into_result().map_err(|errors| {
+        anyhow!(
+            "Script parsing failed:\n{}",
+            errors
+                .into_iter()
+                .map(|e| {
+                    let span = e.span();
+                    let (start_line, start_char) = get_line_number(script, span.start);
+                    let (end_line, end_char) = get_line_number(script, span.end);
+                    format!(
+                        "{} (line {}:{} to line {}:{})",
+                        e.reason(),
+                        start_line,
+                        start_char,
+                        end_line,
+                        end_char
+                    )
+                })
+                .join("\n")
+        )
+    })
 }
 
 #[cfg(test)]
@@ -807,6 +835,34 @@ mod tests {
         assert!(matches!(
             stmt,
             Statement::Expression(Expression::MethodCall(_, _, _))
+        ));
+    }
+
+    #[test]
+    fn test_method_chain() {
+        let stmt = one_statement("(#a eq #b) and (#c eq 0) and (#d eq 0);");
+        let Statement::Expression(Expression::MethodCall(first_call, _, _)) = stmt else {
+            panic!("Statement was not a method call expression");
+        };
+        assert!(matches!(*first_call, Expression::MethodCall(_, _, _)));
+    }
+
+    #[test]
+    fn test_last_statement_no_semicolon() {
+        let stmt = one_statement(
+            "
+        ?i (#a eq 1) {
+            Func1
+        };
+        ",
+        );
+        let Statement::Conditional(Conditional(_, block, None), None) = stmt else {
+            panic!("Statement was not an if statement with no else or else-if");
+        };
+        assert_eq!(block.len(), 1);
+        assert!(matches!(
+            block[0],
+            Statement::Expression(Expression::FunctionCall(_, _))
         ));
     }
 }
