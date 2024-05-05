@@ -112,7 +112,7 @@ lazy_static! {
         "SetTalkSelect" => vec![EnumType::Character],
         "SetTimeAction" => vec![EnumType::Character, EnumType::Character],
         "SetCharAction" => vec![EnumType::Character, EnumType::Command],
-        "SetAICharMove" => vec![EnumType::Character],
+        "SetAICharMove" => vec![EnumType::Character, EnumType::Command],
         "SetEventMode" => vec![EnumType::Character, EnumType::Event, EnumType::Repeat],
         "SubEventMode" => vec![EnumType::Character, EnumType::Event, EnumType::Repeat],
         "GetCharPos" => vec![EnumType::Character],
@@ -145,7 +145,7 @@ lazy_static! {
         "SetCameraPos" => vec![EnumType::Camera],
         "SetSayPos" => vec![EnumType::Character],
         "SetCharMove" => vec![EnumType::Character, EnumType::Command],
-        "SetCharShowList" => vec![EnumType::Character, EnumType::Repeat],
+        "SetCharShowList" => vec![EnumType::Boolean, EnumType::Character, EnumType::Repeat],
         "SetCharTarget" => vec![EnumType::Character, EnumType::Character],
         "GetCharDead" => vec![EnumType::Character],
         "SetMapTimeID" => vec![EnumType::Time],
@@ -169,6 +169,9 @@ lazy_static! {
         "AddEventMode" => vec![EnumType::Character, EnumType::Event, EnumType::Repeat],
         "SetCharWaiting" => vec![EnumType::Character],
         "SetCharDeathBlow" => vec![EnumType::Character],
+        "StopCharTrace" => vec![EnumType::Character],
+        "GetCharFriendFlag" => vec![EnumType::Character],
+        "GetCharRange" => vec![EnumType::Character],
     };
 }
 
