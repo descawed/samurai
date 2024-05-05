@@ -280,6 +280,9 @@ pub(super) fn parser<'src>(
         .then_ignore(just('"'))
         .map(Expression::String);
 
+    // FIXME: this isn't quite right. I've seen functions that reference their arguments with an
+    //  identifier alone and no #, and also functions that reference their arguments with a $,
+    //  which I thought was used for global references. need more research.
     let var = recursive(|var| {
         just('#').ignore_then(text::ident()).then(var.or_not()).map(
             |(v, a): (&str, Option<Expression>)| {
@@ -335,7 +338,7 @@ pub(super) fn parser<'src>(
                 .clone()
                 .or(expr.clone().delimited_by(just('('), just(')')));
             let method = delimited
-                .then(text::ident().padded())
+                .then(text::ident().or(one_of("=<>").to_slice()).padded())
                 .then(args.clone())
                 .map(|((o, m), a): ((Expression, &str), Vec<Expression>)| {
                     Expression::MethodCall(Box::new(o), String::from(m), a)
@@ -792,10 +795,18 @@ mod tests {
 
     #[test]
     fn test_float_zero_fraction_round_trip() {
-        let script = "3.0;";
-        let stmt = one_statement(script);
+        let stmt = one_statement("3.0;");
         let formatted = stmt.to_string();
         let stmt2 = one_statement(&formatted);
         assert!(matches!(stmt2, Statement::Expression(Expression::Float(_))));
+    }
+
+    #[test]
+    fn test_assign() {
+        let stmt = one_statement("#a = #b;");
+        assert!(matches!(
+            stmt,
+            Statement::Expression(Expression::MethodCall(_, _, _))
+        ));
     }
 }
