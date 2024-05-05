@@ -138,6 +138,36 @@ impl Expression {
         }
     }
 
+    pub fn walk_mut<F: FnMut(&mut Self)>(&mut self, f: &mut F) {
+        match self {
+            Expression::ReferenceDeclaration(lhs, rhs) | Expression::ValueDeclaration(lhs, rhs) => {
+                f(lhs);
+                lhs.walk_mut(f);
+                f(rhs);
+                rhs.walk_mut(f);
+            }
+            Expression::FunctionCall(_, args) => {
+                for arg in args {
+                    f(arg);
+                    arg.walk_mut(f);
+                }
+            }
+            Expression::MethodCall(obj, _, args) => {
+                f(obj);
+                obj.walk_mut(f);
+                for arg in args {
+                    f(arg);
+                    arg.walk_mut(f);
+                }
+            }
+            Expression::Global(e) => {
+                f(e);
+                e.walk_mut(f);
+            }
+            _ => (),
+        }
+    }
+
     pub fn unwrap_global(&self) -> &Self {
         match self {
             Self::Global(e) => e.unwrap_global(),

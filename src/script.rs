@@ -344,16 +344,96 @@ fn iter_signature(sig: &[EnumType]) -> impl Iterator<Item = EnumType> + '_ {
     slice.iter().copied().chain(std::iter::repeat(repeat_type))
 }
 
+fn process_expression(expr: &mut Expression, config: &HashMap<(EnumType, i32), String>) -> bool {
+    let mut made_changes = false;
+
+    let is_global = matches!(expr, Expression::Global(_));
+    let expr = expr.unwrap_global_mut();
+
+    // first, process any function definitions that occur in this expression
+    for inner_block in expr.inner_blocks_mut() {
+        made_changes = process_block(inner_block, config) || made_changes;
+    }
+
+    // walk the AST to explore any sub-expressions
+    expr.walk_mut(&mut |e| {
+        made_changes = process_expression(e, config) || made_changes;
+    });
+
+    if !is_global {
+        // we're currently only interested in calls to global functions
+        return made_changes;
+    }
+
+    let Expression::FunctionCall(name, args) = expr else {
+        return made_changes;
+    };
+
+    let Some(signature) = SIGNATURES.get(name.as_str()) else {
+        return made_changes;
+    };
+
+    let mut send_func_select = 0;
+    for (arg_expr, arg_type) in args.iter_mut().zip(iter_signature(signature)) {
+        let &Expression::Int(arg_value) = arg_expr.unwrap_global() else {
+            continue;
+        };
+
+        let actual_type = match arg_type {
+            EnumType::Any => continue,
+            EnumType::Repeat => unreachable!(),
+            EnumType::SendFuncSelect => {
+                send_func_select = arg_value;
+                continue;
+            }
+            EnumType::SendFuncCharacter => {
+                if send_func_select == 1 {
+                    EnumType::Null
+                } else {
+                    EnumType::Character
+                }
+            }
+            _ => arg_type,
+        };
+
+        let Some(constant) = config
+            .get(&(actual_type, arg_value))
+            .or_else(|| match arg_value {
+                -1 => config.get(&(EnumType::Initialize, -1)),
+                _ => None,
+            })
+        else {
+            println!(
+                "Warning: unexpected argument value {} in call to {}",
+                arg_value, name
+            );
+            continue;
+        };
+
+        // if we found a match for a symbolic constant, replace the literal expression with one
+        // referencing the constant
+        *arg_expr = Expression::Global(Box::new(Expression::Variable(Variable(
+            constant.clone(),
+            None,
+        ))));
+        made_changes = true;
+    }
+
+    made_changes
+}
+
 fn process_block(block: &mut Block, config: &HashMap<(EnumType, i32), String>) -> bool {
     let mut made_changes = false;
     for stmt in block.iter_mut() {
         match stmt {
-            Statement::ObjectInitialization(_, init_block) => {
+            Statement::ObjectInitialization(expr, init_block) => {
+                made_changes = process_expression(expr, config) || made_changes;
                 made_changes = process_block(init_block, config) || made_changes;
             }
             Statement::Conditional(conditional, else_block) => {
                 let mut condition = Some(conditional);
-                while let Some(Conditional(_, condition_block, next_condition)) = condition {
+                while let Some(Conditional(expr, condition_block, next_condition)) = condition {
+                    made_changes = process_expression(expr, config) || made_changes;
                     made_changes = process_block(condition_block, config) || made_changes;
                     condition = next_condition.as_deref_mut();
                 }
@@ -362,73 +442,7 @@ fn process_block(block: &mut Block, config: &HashMap<(EnumType, i32), String>) -
                 }
             }
             Statement::Expression(expr) => {
-                let is_global = matches!(expr, Expression::Global(_));
-                let expr = expr.unwrap_global_mut();
-
-                // first, process any function definitions that occur in this expression
-                for inner_block in expr.inner_blocks_mut() {
-                    made_changes = process_block(inner_block, config) || made_changes;
-                }
-
-                if !is_global {
-                    // we're currently only interested in calls to global functions
-                    continue;
-                }
-
-                let Expression::FunctionCall(name, args) = expr else {
-                    continue;
-                };
-
-                let Some(signature) = SIGNATURES.get(name.as_str()) else {
-                    continue;
-                };
-
-                let mut send_func_select = 0;
-                for (arg_expr, arg_type) in args.iter_mut().zip(iter_signature(signature)) {
-                    let &Expression::Int(arg_value) = arg_expr.unwrap_global() else {
-                        continue;
-                    };
-
-                    let actual_type = match arg_type {
-                        EnumType::Any => continue,
-                        EnumType::Repeat => unreachable!(),
-                        EnumType::SendFuncSelect => {
-                            send_func_select = arg_value;
-                            continue;
-                        }
-                        EnumType::SendFuncCharacter => {
-                            if send_func_select == 1 {
-                                EnumType::Null
-                            } else {
-                                EnumType::Character
-                            }
-                        }
-                        _ => arg_type,
-                    };
-
-                    let Some(constant) =
-                        config
-                            .get(&(actual_type, arg_value))
-                            .or_else(|| match arg_value {
-                                -1 => config.get(&(EnumType::Initialize, -1)),
-                                _ => None,
-                            })
-                    else {
-                        println!(
-                            "Warning: unexpected argument value {} in call to {}",
-                            arg_value, name
-                        );
-                        continue;
-                    };
-
-                    // if we found a match for a symbolic constant, replace the literal expression with one
-                    // referencing the constant
-                    *arg_expr = Expression::Global(Box::new(Expression::Variable(Variable(
-                        constant.clone(),
-                        None,
-                    ))));
-                    made_changes = true;
-                }
+                made_changes = process_expression(expr, config) || made_changes;
             }
             _ => (),
         }
