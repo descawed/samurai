@@ -200,7 +200,7 @@ impl Display for Expression {
             Self::Variable(v) => v.fmt(f),
             Self::String(s) => write!(f, "\"{}\"", s),
             Self::Int(i) => i.fmt(f),
-            Self::Float(n) => n.fmt(f),
+            Self::Float(n) => write!(f, "{:?}", n), // debug format so we don't format whole numbers like ints
             Self::Global(e) => write!(f, "${}", e),
         }
     }
@@ -211,7 +211,7 @@ pub(super) struct Conditional(Expression, Block, Option<Box<Conditional>>); // i
 
 impl Display for Conditional {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(f, "({}) {}", self.0, self.1)?;
+        write!(f, "( {} ) {}", self.0, self.1)?;
         if let Some(ref elseif) = self.2 {
             write!(f, " {}", *elseif)?;
         }
@@ -237,7 +237,7 @@ impl Display for Statement {
                 write!(f, " @{}", block)?;
             }
             Self::Conditional(conditional, else_block) => {
-                write!(f, "?i {}", conditional)?;
+                write!(f, "?i{}", conditional)?;
                 if let Some(block) = else_block {
                     write!(f, " {}", block)?;
                 }
@@ -256,7 +256,9 @@ pub(super) fn parser<'src>(
 
     let float = text::int(10)
         .then(just('.'))
-        .then(text::int(10))
+        // need to use digits(10) instead of int(10) because otherwise we won't match a fractional
+        // part that consists solely of multiple zeroes
+        .then(text::digits(10))
         .to_slice()
         .from_str()
         .unwrapped()
@@ -487,6 +489,17 @@ mod tests {
         let stmt = one_statement("1.3;");
         match stmt {
             Statement::Expression(Expression::Float(f)) => assert!((f - 1.3).abs() < f32::EPSILON),
+            _ => panic!("Statement was not a float expression"),
+        }
+    }
+
+    #[test]
+    fn test_float_multiple_fractional_zeros() {
+        let stmt = one_statement("3.00; ");
+        match stmt {
+            Statement::Expression(Expression::Float(f)) => {
+                assert!((f - 3.00).abs() < f32::EPSILON)
+            }
             _ => panic!("Statement was not a float expression"),
         }
     }
@@ -774,5 +787,14 @@ mod tests {
             )
             .unwrap();
         assert_eq!(result.len(), 2);
+    }
+
+    #[test]
+    fn test_float_zero_fraction_round_trip() {
+        let script = "3.0;";
+        let stmt = one_statement(script);
+        let formatted = stmt.to_string();
+        let stmt2 = one_statement(&formatted);
+        assert!(matches!(stmt2, Statement::Expression(Expression::Float(_))));
     }
 }
