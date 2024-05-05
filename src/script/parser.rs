@@ -135,6 +135,7 @@ impl Expression {
     pub fn is_atom(&self) -> bool {
         match self {
             Self::Int(_) | Self::Float(_) | Self::String(_) | Self::Variable(_) => true,
+            Self::FunctionCall(_, args) => args.is_empty(), // don't need parentheses around a function call with no args
             Self::Global(e) => e.is_atom(),
             _ => false,
         }
@@ -182,7 +183,7 @@ impl Display for Expression {
             Self::FunctionDefinition(args, body) => {
                 write!(f, "?F")?;
                 if !args.is_empty() {
-                    write!(f, "( ")?;
+                    write!(f, " (")?;
                     let mut is_first = true;
                     for arg in args {
                         if !is_first {
@@ -192,7 +193,7 @@ impl Display for Expression {
 
                         write!(f, "{}", arg)?;
                     }
-                    write!(f, " )")?;
+                    write!(f, ")")?;
                 }
 
                 write!(f, " {}", body)
@@ -211,7 +212,7 @@ pub(super) struct Conditional(Expression, Block, Option<Box<Conditional>>); // i
 
 impl Display for Conditional {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(f, "( {} ) {}", self.0, self.1)?;
+        write!(f, "({}) {}", self.0, self.1)?;
         if let Some(ref elseif) = self.2 {
             write!(f, " {}", *elseif)?;
         }
@@ -237,7 +238,7 @@ impl Display for Statement {
                 write!(f, " @{}", block)?;
             }
             Self::Conditional(conditional, else_block) => {
-                write!(f, "?i{}", conditional)?;
+                write!(f, "?i {}", conditional)?;
                 if let Some(block) = else_block {
                     write!(f, " {}", block)?;
                 }
