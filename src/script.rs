@@ -71,6 +71,16 @@ pub enum EnumType {
 }
 
 impl EnumType {
+    fn is_concrete(&self) -> bool {
+        !matches!(
+            self,
+            EnumType::Any
+                | EnumType::Repeat
+                | EnumType::SendFuncSelect
+                | EnumType::SendFuncCharacter
+        )
+    }
+
     fn get_constant_type(constant: &str) -> Option<Self> {
         match constant {
             "ON" | "OFF" => Some(Self::Boolean),
@@ -128,8 +138,8 @@ lazy_static! {
         "SetAddCharScript" => vec![EnumType::Character],
         "SetCharNoCollMode" => vec![EnumType::Character, EnumType::Boolean],
         "SetAIGroupRelation" => vec![EnumType::Footing, EnumType::Footing, EnumType::Relation],
-        "SendFunc" => vec![EnumType::Any, EnumType::SendFuncCharacter],
-        "SendFunc2" => vec![EnumType::Any, EnumType::SendFuncCharacter],
+        "SendFunc" => vec![EnumType::SendFuncSelect, EnumType::SendFuncCharacter],
+        "SendFunc2" => vec![EnumType::SendFuncSelect, EnumType::SendFuncCharacter],
         "SetAddCharScriptList" => vec![EnumType::Any, EnumType::Character, EnumType::Repeat],
         "SetCharNeckAction" => vec![EnumType::Character],
         "SetCharFace" => vec![EnumType::Character, EnumType::Animation],
@@ -172,6 +182,24 @@ lazy_static! {
         "StopCharTrace" => vec![EnumType::Character],
         "GetCharFriendFlag" => vec![EnumType::Character],
         "GetCharRange" => vec![EnumType::Character],
+        // callback functions
+        "MapIn" => vec![EnumType::Map],
+        "MapOut" => vec![EnumType::Map],
+        "Collision" => vec![EnumType::Character, EnumType::Character],
+        "Damage" => vec![EnumType::Character, EnumType::Character],
+        "TalkEnd" => vec![EnumType::Character, EnumType::Character],
+        "TalkSelect" => vec![EnumType::Character],
+        "PosJoin" => vec![EnumType::Character],
+        "PosLeave" => vec![EnumType::Character],
+        "Join" => vec![EnumType::Character, EnumType::Character],
+        "Leave" => vec![EnumType::Character, EnumType::Character],
+        "TimeOut" => vec![EnumType::Character, EnumType::Character],
+        "SayDead" => vec![EnumType::Character, EnumType::Character],
+        "NpcOut" => vec![EnumType::Character],
+        "WeaponOn" => vec![EnumType::Character, EnumType::Character],
+        "WeaponOff" => vec![EnumType::Character, EnumType::Character],
+        "Dead" => vec![EnumType::Character, EnumType::Character],
+        "Watch" => vec![EnumType::Character, EnumType::Character],
     };
 }
 
@@ -347,20 +375,108 @@ fn iter_signature(sig: &[EnumType]) -> impl Iterator<Item = EnumType> + '_ {
     slice.iter().copied().chain(std::iter::repeat(repeat_type))
 }
 
-fn process_expression(expr: &mut Expression, config: &HashMap<(EnumType, i32), String>) -> bool {
+fn scope_lookup<'a, 'b, T: Iterator<Item = &'a HashMap<String, EnumType>>>(
+    name: &'b String,
+    mut it: T,
+) -> Option<EnumType> {
+    it.find_map(|m| m.get(name)).copied()
+}
+
+fn make_global_var(name: String) -> Expression {
+    Expression::Global(Box::new(Expression::Variable(Variable(name, None))))
+}
+
+// TODO: refactor this awful function
+fn process_expression(
+    expr: &mut Expression,
+    config: &HashMap<(EnumType, i32), String>,
+    scope: &mut Vec<HashMap<String, EnumType>>,
+) -> bool {
     let mut made_changes = false;
 
     let is_global = matches!(expr, Expression::Global(_));
     let expr = expr.unwrap_global_mut();
 
-    // first, process any function definitions that occur in this expression
-    for inner_block in expr.inner_blocks_mut() {
-        made_changes = process_block(inner_block, config) || made_changes;
+    // if this is defining a function for a well-known callback, propagate type information
+    let mut pushed_scope = false;
+    if let Some((lhs, Expression::FunctionDefinition(args, _))) = expr.declaration() {
+        // well-known callbacks are always globals
+        if is_global || matches!(lhs, Expression::Global(_)) {
+            // attribute types not currently supported
+            if let Expression::Variable(Variable(name, None)) = lhs.unwrap_global() {
+                if let Some(signature) = SIGNATURES.get(name.as_str()) {
+                    // add types
+                    let mut new_scope = HashMap::with_capacity(args.len());
+                    for (arg, arg_type) in args.iter().zip(iter_signature(signature)) {
+                        new_scope.insert(arg.clone(), arg_type);
+                    }
+                    scope.push(new_scope);
+                    pushed_scope = true;
+                }
+            }
+        }
+    }
+
+    // process any function definitions that occur in this expression
+    for (inner_args, inner_block) in expr.inner_blocks_mut() {
+        // if we didn't find the actual types above, create a dummy scope so we don't look things up
+        // in the wrong scope by accident
+        if !pushed_scope {
+            let mut new_scope = HashMap::with_capacity(inner_args.len());
+            for arg in inner_args {
+                new_scope.insert(arg.clone(), EnumType::Any);
+            }
+            scope.push(new_scope);
+        }
+
+        made_changes = process_block(inner_block, config, scope) || made_changes;
+
+        // pop the dummy scope if we added one
+        if !pushed_scope {
+            scope.pop();
+        }
+    }
+
+    if pushed_scope {
+        scope.pop();
+    }
+
+    // if this is a comparison method call, see if we know the type of the variable
+    if let Expression::MethodCall(var, method, args) = expr {
+        let is_global_object = matches!(**var, Expression::Global(_));
+        // attributes not currently supported
+        if let Expression::Variable(Variable(var_name, None)) = var.unwrap_global() {
+            // if this is a comparison or assignment method with a single integer argument
+            if args.len() == 1
+                && matches!(
+                    method.as_str(),
+                    "eq" | "lt" | "le" | "gt" | "ge" | "<" | ">" | "="
+                )
+            {
+                if let &Expression::Int(arg_value) = args[0].unwrap_global() {
+                    // try to look up the variable in the scope
+                    let arg_type = if is_global_object {
+                        scope_lookup(var_name, scope.iter().rev())
+                    } else {
+                        scope_lookup(var_name, scope.iter())
+                    };
+
+                    if let Some(arg_type) = arg_type {
+                        if arg_type.is_concrete() {
+                            if let Some(constant) = config.get(&(arg_type, arg_value)) {
+                                // replace the literal with the constant
+                                args[0] = make_global_var(constant.clone());
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 
     // walk the AST to explore any sub-expressions
     expr.walk_mut(&mut |e| {
-        made_changes = process_expression(e, config) || made_changes;
+        made_changes = process_expression(e, config, scope) || made_changes;
     });
 
     if !is_global {
@@ -415,37 +531,38 @@ fn process_expression(expr: &mut Expression, config: &HashMap<(EnumType, i32), S
 
         // if we found a match for a symbolic constant, replace the literal expression with one
         // referencing the constant
-        *arg_expr = Expression::Global(Box::new(Expression::Variable(Variable(
-            constant.clone(),
-            None,
-        ))));
+        *arg_expr = make_global_var(constant.clone());
         made_changes = true;
     }
 
     made_changes
 }
 
-fn process_block(block: &mut Block, config: &HashMap<(EnumType, i32), String>) -> bool {
+fn process_block(
+    block: &mut Block,
+    config: &HashMap<(EnumType, i32), String>,
+    scope: &mut Vec<HashMap<String, EnumType>>,
+) -> bool {
     let mut made_changes = false;
     for stmt in block.iter_mut() {
         match stmt {
             Statement::ObjectInitialization(expr, init_block) => {
-                made_changes = process_expression(expr, config) || made_changes;
-                made_changes = process_block(init_block, config) || made_changes;
+                made_changes = process_expression(expr, config, scope) || made_changes;
+                made_changes = process_block(init_block, config, scope) || made_changes;
             }
             Statement::Conditional(conditional, else_block) => {
                 let mut condition = Some(conditional);
                 while let Some(Conditional(expr, condition_block, next_condition)) = condition {
-                    made_changes = process_expression(expr, config) || made_changes;
-                    made_changes = process_block(condition_block, config) || made_changes;
+                    made_changes = process_expression(expr, config, scope) || made_changes;
+                    made_changes = process_block(condition_block, config, scope) || made_changes;
                     condition = next_condition.as_deref_mut();
                 }
                 if let Some(else_block) = else_block {
-                    made_changes = process_block(else_block, config) || made_changes;
+                    made_changes = process_block(else_block, config, scope) || made_changes;
                 }
             }
             Statement::Expression(expr) => {
-                made_changes = process_expression(expr, config) || made_changes;
+                made_changes = process_expression(expr, config, scope) || made_changes;
             }
             _ => (),
         }
@@ -461,7 +578,7 @@ pub fn parse_format_script<T: AsRef<str>>(
 ) -> Result<String> {
     let mut block = parser::parse(script)?;
     if let Some(constants) = config {
-        if process_block(&mut block, &constants) {
+        if process_block(&mut block, &constants, &mut vec![]) {
             // if we actually made changes, insert an include of config.h at the beginning of the script
             block.insert(
                 0,

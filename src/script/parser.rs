@@ -122,7 +122,17 @@ impl Expression {
         }
     }
 
-    pub fn inner_blocks_mut(&mut self) -> Vec<&mut Block> {
+    pub fn declaration(&self) -> Option<(&Self, &Self)> {
+        match self {
+            Self::ReferenceDeclaration(lhs, rhs) | Self::ValueDeclaration(lhs, rhs) => {
+                Some((lhs.as_ref(), rhs.as_ref()))
+            }
+            Self::Global(e) => e.declaration(),
+            _ => None,
+        }
+    }
+
+    pub fn inner_blocks_mut(&mut self) -> Vec<(&mut [String], &mut Block)> {
         match self {
             Expression::ReferenceDeclaration(_, rhs) | Expression::ValueDeclaration(_, rhs) => {
                 rhs.inner_blocks_mut()
@@ -132,7 +142,7 @@ impl Expression {
                 .iter_mut()
                 .flat_map(|a| a.inner_blocks_mut().into_iter())
                 .collect(),
-            Expression::FunctionDefinition(_, block) => vec![block],
+            Expression::FunctionDefinition(args, block) => vec![(args, block)],
             Expression::Global(e) => e.inner_blocks_mut(),
             _ => vec![],
         }
