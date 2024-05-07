@@ -387,7 +387,7 @@ impl ScriptFormatter {
             return None;
         }
 
-        let config = self.config.as_ref().unwrap();
+        let config = self.config.as_ref()?;
         config
             .get(&(value_type, value))
             .or_else(|| match value {
@@ -401,7 +401,7 @@ impl ScriptFormatter {
         self.get_constant(self.get_var_type(name, is_global)?, value)
     }
 
-    fn process_call(&mut self, name: &String, args: &mut Vec<Expression>) {
+    fn process_call(&mut self, name: &String, args: &mut [Expression]) {
         let Some(signature) = SIGNATURES.get(name.as_str()) else {
             return;
         };
@@ -462,7 +462,7 @@ impl ScriptFormatter {
         &mut self,
         var: &mut Expression,
         method: &str,
-        args: &mut Vec<Expression>,
+        args: &mut [Expression],
     ) {
         // attributes not currently supported
         if let (Expression::Variable(Variable(var_name, None)), is_global_object) =
@@ -621,5 +621,11 @@ impl ScriptFormatter {
             Some(num_spaces) => text.replace('\t', " ".repeat(num_spaces).as_str()),
             None => text,
         })
+    }
+}
+
+impl Default for ScriptFormatter {
+    fn default() -> Self {
+        Self::new()
     }
 }
