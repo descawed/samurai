@@ -112,6 +112,10 @@ pub(super) enum Expression {
 }
 
 impl Expression {
+    pub fn new_global_var(name: String) -> Self {
+        Self::Global(Box::new(Self::Variable(Variable(name, None))))
+    }
+
     pub fn into_declaration(self) -> Option<(Self, Self)> {
         match self {
             Self::ReferenceDeclaration(lhs, rhs) | Self::ValueDeclaration(lhs, rhs) => {
@@ -178,17 +182,17 @@ impl Expression {
         }
     }
 
-    pub fn unwrap_global(&self) -> &Self {
+    pub fn unwrap_global(&self) -> (&Self, bool) {
         match self {
-            Self::Global(e) => e.unwrap_global(),
-            _ => self,
+            Self::Global(e) => (e.unwrap_global().0, true),
+            _ => (self, false),
         }
     }
 
-    pub fn unwrap_global_mut(&mut self) -> &mut Self {
+    pub fn unwrap_global_mut(&mut self) -> (&mut Self, bool) {
         match self {
-            Self::Global(e) => e.unwrap_global_mut(),
-            _ => self,
+            Self::Global(e) => (e.unwrap_global_mut().0, true),
+            _ => (self, false),
         }
     }
 

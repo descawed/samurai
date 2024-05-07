@@ -13,6 +13,7 @@ use encoding_rs::SHIFT_JIS;
 use strum::EnumString;
 use walkdir::WalkDir;
 
+use samurai::script::ScriptFormatter;
 use samurai::texture::{PictureImageFile, StackDirection};
 use samurai::volume::{hash_name, Volume, DEFAULT_MAX_OBJECTS};
 use samurai::{script, Readable};
@@ -440,14 +441,12 @@ fn format_script(
     let formatted = if use_simple_parser {
         script::format_script(text, tab_width)
     } else {
-        let config = match config_path {
-            Some(path) => {
-                let config_text = fs::read_to_string(path)?;
-                Some(script::parse_config(config_text)?)
-            }
-            None => None,
-        };
-        script::parse_format_script(text, tab_width, config)?
+        let mut formatter = ScriptFormatter::new();
+        if let Some(path) = config_path {
+            let config_text = fs::read_to_string(path)?;
+            formatter.use_config(&config_text)?;
+        }
+        formatter.format_script(text, tab_width)?
     };
 
     if let Some(output_path) = output_path {
