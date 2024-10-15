@@ -175,6 +175,7 @@ impl ScriptFormatter {
             .get(&(value_type, value))
             .or_else(|| match value {
                 -1 => config.get(&(EnumType::Initialize, -1)),
+                0 => config.get(&(EnumType::Null, 0)),
                 _ => None,
             })
             .map(|s| Expression::new_global_var(s.clone()))
