@@ -27,7 +27,7 @@ impl Analyzer {
     ) {
         let constant_map: Option<HashMap<_, _>> =
             config.map(|c| c.iter().map(|((t, _), n)| (n.clone(), *t)).collect());
-        let (global_scope, _prototype_object) = Scope::new_global(constant_map);
+        let global_scope = Scope::new_global(constant_map);
         script.set_scope(global_scope);
 
         // repeatedly process and infer types until we stop finding anything new
@@ -42,10 +42,10 @@ impl Analyzer {
 
     fn update_return_type(&mut self, signature: &SharedSignature, new_return_type: EnumType) {
         let old_return_type = { signature.borrow().return_type() };
-        if old_return_type != new_return_type {
-            if signature.borrow_mut().update_return_type(new_return_type) != old_return_type {
-                self.made_changes = true;
-            }
+        if old_return_type != new_return_type
+            && signature.borrow_mut().update_return_type(new_return_type) != old_return_type
+        {
+            self.made_changes = true;
         }
     }
 
@@ -131,7 +131,7 @@ impl Analyzer {
                             ScriptValue::Function(inner_sig) => {
                                 self.update_return_type(&inner_sig, final_arg_type);
                             }
-                            ScriptValue::Scalar(_) if args.len() == 0 => {
+                            ScriptValue::Scalar(_) if args.is_empty() => {
                                 self.update(
                                     &scope,
                                     &name_var,
@@ -201,10 +201,6 @@ impl Analyzer {
                         // set lhs type based on rhs
                         if let Some(arg_type) = get_expression_type(&scope, arg_expr) {
                             self.update(&scope, obj_var, is_global, arg_type);
-                        }
-
-                        if method == "=" && obj_var.0 == "id" {
-                            println!("break here");
                         }
 
                         // set rhs type based on lhs

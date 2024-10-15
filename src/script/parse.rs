@@ -131,16 +131,6 @@ impl Expression {
         }
     }
 
-    pub fn declaration(&self) -> Option<(&Self, &Self)> {
-        match self {
-            Self::ReferenceDeclaration(lhs, rhs) | Self::ValueDeclaration(lhs, rhs) => {
-                Some((lhs.as_ref(), rhs.as_ref()))
-            }
-            Self::Global(e) => e.declaration(),
-            _ => None,
-        }
-    }
-
     pub fn declaration_mut(&mut self) -> Option<(&mut Self, &mut Self)> {
         match self {
             Self::ReferenceDeclaration(ref mut lhs, ref mut rhs)
@@ -165,36 +155,6 @@ impl Expression {
             Expression::FunctionDefinition(args, block) => vec![(args, block)],
             Expression::Global(e) => e.inner_blocks_mut(),
             _ => vec![],
-        }
-    }
-
-    pub fn walk<F: Fn(&Self)>(&self, f: &F) {
-        match self {
-            Expression::ReferenceDeclaration(lhs, rhs) | Expression::ValueDeclaration(lhs, rhs) => {
-                f(lhs);
-                lhs.walk(f);
-                f(rhs);
-                rhs.walk(f);
-            }
-            Expression::FunctionCall(_, args) => {
-                for arg in args {
-                    f(arg);
-                    arg.walk(f);
-                }
-            }
-            Expression::MethodCall(obj, _, args) => {
-                f(obj);
-                obj.walk(f);
-                for arg in args {
-                    f(arg);
-                    arg.walk(f);
-                }
-            }
-            Expression::Global(e) => {
-                f(e);
-                e.walk(f);
-            }
-            _ => (),
         }
     }
 

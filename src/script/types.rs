@@ -294,8 +294,7 @@ lazy_static! {
     };
 }
 
-// FIXME: for script-defined functions we need argument names, but for built-in functions we don't
-#[derive(Debug, PartialEq, Eq, Clone)]
+#[derive(Debug, Default, PartialEq, Eq, Clone)]
 pub(super) struct Signature {
     arguments: Vec<EnumType>,
     vararg: EnumType,
@@ -370,16 +369,6 @@ impl Signature {
     }
 }
 
-impl Default for Signature {
-    fn default() -> Self {
-        Self {
-            arguments: Default::default(),
-            vararg: Default::default(),
-            return_type: Default::default(),
-        }
-    }
-}
-
 pub(super) type SharedScope = Rc<RefCell<Scope>>;
 pub(super) type SharedSignature = Rc<RefCell<Signature>>;
 
@@ -412,7 +401,7 @@ impl Clone for ScriptValue {
 
 macro_rules! parent {
     ($scope:ident, $method:ident($($arg:expr),*)) => {
-        $scope.parent.as_ref().and_then(|p| p.borrow().$method($($arg),*))
+        $scope.parent.as_ref().and_then(Weak::upgrade).and_then(|p| p.borrow().$method($($arg),*))
     };
 }
 
@@ -423,11 +412,11 @@ pub(super) struct Scope {
     // has to be in an Rc, because there's no other way to get a permanent reference to anything in
     // our maps out of the parent RefCell
     functions: HashMap<String, SharedSignature>,
-    // needs to be weak to avoid a cycle because each of these scopes has a strong reference back
-    // to this containing scope. the actual owner of these scopes (like every scope) should be the
-    // Block they're associated with
-    objects: HashMap<String, Weak<RefCell<Scope>>>,
-    parent: Option<SharedScope>,
+    // either the object references or the parent reference need to be weak to avoid a cycle. we'll
+    // make the parent weak because object variables need to be owned by the scope, as they have
+    // no other owner
+    objects: HashMap<String, SharedScope>,
+    parent: Option<Weak<RefCell<Scope>>>,
 }
 
 impl Scope {
@@ -436,37 +425,78 @@ impl Scope {
             scalars: HashMap::new(),
             functions: HashMap::new(),
             objects: HashMap::new(),
-            parent,
+            parent: parent.as_ref().map(Rc::downgrade),
         }))
     }
 
-    pub fn new_global(constants: Option<HashMap<String, EnumType>>) -> (SharedScope, SharedScope) {
+    pub fn new_global(constants: Option<HashMap<String, EnumType>>) -> SharedScope {
         let mut functions = HashMap::new();
         for (&name, signature) in SIGNATURES.iter() {
             functions.insert(String::from(name), Rc::new(RefCell::new(signature.clone())));
         }
 
         let this = Rc::new(RefCell::new(Self {
-            scalars: constants.unwrap_or_else(HashMap::new),
+            scalars: constants.unwrap_or_default(),
             functions,
             objects: HashMap::new(),
             parent: None,
         }));
 
-        let prototype = this.new_child();
-
         this.borrow_mut()
             .objects
-            .insert(String::from("object"), Rc::downgrade(&prototype));
-        (this, prototype)
+            .insert(String::from("object"), this.new_child());
+        this
     }
 
-    pub fn clone_shared(&self) -> SharedScope {
-        Rc::new(RefCell::new(self.clone()))
+    pub fn merge<T: Deref<Target = Self>>(&mut self, other: T) {
+        if std::ptr::eq(self, &*other) {
+            return; // nothing to do
+        }
+
+        for (name, &new_value) in &other.scalars {
+            match self.scalars.get_mut(name) {
+                Some(value) => {
+                    *value = value.choose(new_value);
+                }
+                None => {
+                    self.scalars.insert(name.clone(), new_value);
+                }
+            }
+        }
+
+        for (name, new_value) in &other.functions {
+            match self.functions.get_mut(name) {
+                Some(value) => {
+                    if std::ptr::eq(value.as_ptr(), new_value.as_ptr()) {
+                        continue;
+                    }
+
+                    value.borrow_mut().merge(new_value.borrow());
+                }
+                None => {
+                    self.functions.insert(name.clone(), Rc::clone(new_value));
+                }
+            }
+        }
+
+        for (name, new_value) in &other.objects {
+            match self.objects.get_mut(name) {
+                Some(value) => {
+                    if std::ptr::eq(value.as_ptr(), new_value.as_ptr()) {
+                        continue;
+                    }
+
+                    value.borrow_mut().merge(new_value.borrow());
+                }
+                None => {
+                    self.objects.insert(name.clone(), Rc::clone(new_value));
+                }
+            }
+        }
     }
 
     pub fn parent(&self) -> Option<SharedScope> {
-        self.parent.as_ref().map(Rc::clone)
+        self.parent.as_ref().and_then(Weak::upgrade)
     }
 
     // I've decided not to make this an Option for now because I can't currently envision a
@@ -475,7 +505,7 @@ impl Scope {
         if std::ptr::eq(parent.as_ptr(), self) {
             panic!("Tried to set parent to self");
         }
-        self.parent = Some(parent);
+        self.parent = Some(Rc::downgrade(&parent));
     }
 
     fn lookup_for_attribute<'a, 'b, F>(
@@ -490,11 +520,11 @@ impl Scope {
             Variable(name, None) => (None, name),
             Variable(name, Some(attr)) => {
                 let mut this_mut = this.borrow_mut();
-                let base_object = lookup(&*this_mut, name).unwrap_or_else(|| {
+                let base_object = lookup(&this_mut, name).unwrap_or_else(|| {
                     let new_object = this.new_child();
                     this_mut
                         .objects
-                        .insert(name.clone(), Rc::downgrade(&new_object));
+                        .insert(name.clone(), Rc::clone(&new_object));
                     new_object
                 });
                 let (sub_object, final_name) =
@@ -507,26 +537,26 @@ impl Scope {
         }
     }
 
-    fn get_attribute_for_attribute<'a, 'b>(
-        this: &'a SharedScope,
-        var: &'b Variable,
-    ) -> (Option<SharedScope>, &'b str) {
+    fn get_attribute_for_attribute<'a>(
+        this: &SharedScope,
+        var: &'a Variable,
+    ) -> (Option<SharedScope>, &'a str) {
         Self::lookup_for_attribute(this, var, Self::lookup_own_object)
     }
 
-    fn get_object_for_attribute_local<'a, 'b>(
-        this: &'a SharedScope,
-        var: &'b Variable,
-    ) -> (SharedScope, &'b str) {
+    fn get_object_for_attribute_local<'a>(
+        this: &SharedScope,
+        var: &'a Variable,
+    ) -> (SharedScope, &'a str) {
         let (object, name) =
             Self::lookup_for_attribute(this, var, |this, name| this.lookup_object_local(name));
         (object.unwrap_or_else(|| Rc::clone(this)), name)
     }
 
-    fn get_object_for_attribute_global<'a, 'b>(
-        this: &'a SharedScope,
-        var: &'b Variable,
-    ) -> (SharedScope, &'b str) {
+    fn get_object_for_attribute_global<'a>(
+        this: &SharedScope,
+        var: &'a Variable,
+    ) -> (SharedScope, &'a str) {
         let (object, name) =
             Self::lookup_for_attribute(this, var, |this, name| this.lookup_object_global(name));
         (object.unwrap_or_else(|| Rc::clone(this)), name)
@@ -575,7 +605,7 @@ impl Scope {
                 }
             }
             Variable(name, Some(attr)) => Self::lookup_attribute_definition_scope(
-                &*attr,
+                attr,
                 self.lookup_local_object(&name.as_str().into()),
             ),
         }
@@ -601,7 +631,7 @@ impl Scope {
                 scope => scope,
             },
             Variable(name, Some(attr)) => Self::lookup_attribute_definition_scope(
-                &*attr,
+                attr,
                 self.lookup_global_object(&name.as_str().into()),
             ),
         }
@@ -627,8 +657,14 @@ impl Scope {
     fn add_object(&mut self, name: &str, attributes: SharedScope) {
         self.scalars.remove(name);
         self.functions.remove(name);
-        self.objects
-            .insert(String::from(name), Rc::downgrade(&attributes));
+        match self.objects.get_mut(name) {
+            Some(scope) => {
+                scope.borrow_mut().merge(attributes.borrow());
+            }
+            None => {
+                self.objects.insert(String::from(name), attributes);
+            }
+        }
     }
 
     fn add(&mut self, name: &str, value: ScriptValue) {
@@ -648,7 +684,7 @@ impl Scope {
     }
 
     fn lookup_own_object(&self, name: &str) -> Option<SharedScope> {
-        self.objects.get(name).and_then(Weak::upgrade)
+        self.objects.get(name).map(Rc::clone)
     }
 
     fn lookup_own_var(&self, name: &str) -> Option<ScriptValue> {
@@ -656,10 +692,8 @@ impl Scope {
             Some(ScriptValue::Scalar(scalar))
         } else if let Some(object) = self.lookup_own_object(name) {
             Some(ScriptValue::Object(object))
-        } else if let Some(function) = self.lookup_own_function(name) {
-            Some(ScriptValue::Function(function))
         } else {
-            None
+            self.lookup_own_function(name).map(ScriptValue::Function)
         }
     }
 
@@ -888,14 +922,6 @@ impl Scope {
         }
     }
 
-    pub fn update_scalar(&mut self, var: &Variable, is_global: bool, scalar_type: EnumType) {
-        if is_global {
-            self.update_global_scalar(var, scalar_type)
-        } else {
-            self.update_local_scalar(var, scalar_type)
-        }
-    }
-
     pub fn update_local_function(&mut self, var: &Variable, signature: SharedSignature) {
         match self.lookup_definition_scope_local(var) {
             Some((Some(scope), name)) => {
@@ -920,14 +946,6 @@ impl Scope {
         }
     }
 
-    pub fn update_function(&mut self, var: &Variable, is_global: bool, signature: SharedSignature) {
-        if is_global {
-            self.update_global_function(var, signature)
-        } else {
-            self.update_local_function(var, signature)
-        }
-    }
-
     pub fn update_local_object(&mut self, var: &Variable, attributes: SharedScope) {
         match self.lookup_definition_scope_local(var) {
             Some((Some(scope), name)) => {
@@ -949,14 +967,6 @@ impl Scope {
                 self.add_object(name, attributes);
             }
             None => (),
-        }
-    }
-
-    pub fn update_object(&mut self, var: &Variable, is_global: bool, attributes: SharedScope) {
-        if is_global {
-            self.update_global_object(var, attributes)
-        } else {
-            self.update_local_object(var, attributes)
         }
     }
 
@@ -986,123 +996,23 @@ impl Scope {
 }
 
 pub(super) trait ScopeExt {
-    fn global(&self) -> SharedScope;
-
     fn new_child(&self) -> SharedScope;
-
-    fn define_local_scalar(&mut self, var: &Variable, scalar_type: EnumType);
-
-    fn define_local_function(&mut self, var: &Variable, signature: Signature);
-
-    fn define_local_object(&mut self, var: &Variable, attributes: SharedScope);
-
-    fn define_local(&mut self, var: &Variable, value: ScriptValue);
-
-    fn define_global_scalar(&mut self, var: &Variable, scalar_type: EnumType);
-
-    fn define_global_function(&mut self, var: &Variable, signature: Signature);
-
-    fn define_global_object(&mut self, var: &Variable, attributes: SharedScope);
-
-    fn define_global(&mut self, var: &Variable, value: ScriptValue);
-
-    fn define_scalar(&mut self, var: &Variable, is_global: bool, scalar_type: EnumType);
-
-    fn define_function(&mut self, var: &Variable, is_global: bool, signature: Signature);
-
-    fn define_object(&mut self, var: &Variable, is_global: bool, attributes: SharedScope);
 
     fn define(&mut self, var: &Variable, is_global: bool, value: ScriptValue);
 }
 
 impl ScopeExt for SharedScope {
-    fn global(&self) -> SharedScope {
-        match self.borrow().parent.as_ref() {
-            Some(parent) => parent.global(),
-            None => Rc::clone(self),
-        }
-    }
-
     fn new_child(&self) -> SharedScope {
         Scope::new(Some(Rc::clone(self)))
     }
 
-    fn define_local_scalar(&mut self, var: &Variable, scalar_type: EnumType) {
-        let (object, name) = Scope::get_object_for_attribute_local(self, var);
-        object.borrow_mut().add_scalar(name, scalar_type);
-    }
-
-    fn define_local_function(&mut self, var: &Variable, signature: Signature) {
-        let (object, name) = Scope::get_object_for_attribute_local(self, var);
-        object
-            .borrow_mut()
-            .add_function(name, Rc::new(RefCell::new(signature)));
-    }
-
-    fn define_local_object(&mut self, var: &Variable, attributes: SharedScope) {
-        let (object, name) = Scope::get_object_for_attribute_local(self, var);
-        object.borrow_mut().add_object(name, attributes);
-    }
-
-    fn define_local(&mut self, var: &Variable, value: ScriptValue) {
-        let (object, name) = Scope::get_object_for_attribute_local(self, var);
-        object.borrow_mut().add(name, value);
-    }
-
-    fn define_global_scalar(&mut self, var: &Variable, scalar_type: EnumType) {
-        let (object, name) = Scope::get_object_for_attribute_global(self, var);
-        object.borrow_mut().add_scalar(name, scalar_type);
-    }
-
-    fn define_global_function(&mut self, var: &Variable, signature: Signature) {
-        let (object, name) = Scope::get_object_for_attribute_global(self, var);
-        object
-            .borrow_mut()
-            .add_function(name, Rc::new(RefCell::new(signature)));
-    }
-
-    fn define_global_object(&mut self, var: &Variable, attributes: SharedScope) {
-        let (object, name) = Scope::get_object_for_attribute_global(self, var);
-        object.borrow_mut().add_object(name, attributes);
-    }
-
-    fn define_global(&mut self, var: &Variable, value: ScriptValue) {
-        let (object, name) = Scope::get_object_for_attribute_global(self, var);
-        if let ScriptValue::Object(ref obj) = value {
-            obj.borrow_mut().set_parent(Rc::clone(&object));
-        }
-        object.borrow_mut().add(name, value);
-    }
-
-    fn define_scalar(&mut self, var: &Variable, is_global: bool, scalar_type: EnumType) {
-        if is_global {
-            self.define_global_scalar(var, scalar_type);
-        } else {
-            self.define_local_scalar(var, scalar_type);
-        }
-    }
-
-    fn define_function(&mut self, var: &Variable, is_global: bool, signature: Signature) {
-        if is_global {
-            self.define_global_function(var, signature);
-        } else {
-            self.define_local_function(var, signature);
-        }
-    }
-
-    fn define_object(&mut self, var: &Variable, is_global: bool, attributes: SharedScope) {
-        if is_global {
-            self.define_global_object(var, attributes);
-        } else {
-            self.define_local_object(var, attributes);
-        }
-    }
-
     fn define(&mut self, var: &Variable, is_global: bool, value: ScriptValue) {
-        if is_global {
-            self.define_global(var, value);
+        let (object, name) = if is_global {
+            Scope::get_object_for_attribute_global(self, var)
         } else {
-            self.define_local(var, value);
-        }
+            Scope::get_object_for_attribute_local(self, var)
+        };
+
+        object.borrow_mut().add(name, value);
     }
 }
