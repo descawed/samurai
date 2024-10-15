@@ -1,12 +1,15 @@
 use std::fmt::{Display, Formatter};
 use std::ops::{Deref, DerefMut};
+use std::rc::Rc;
 
 use anyhow::{anyhow, Result};
 use chumsky::prelude::*;
 use itertools::Itertools;
 
+use super::types::{Scope, SharedScope, Variable};
+
 #[derive(Debug, Clone)]
-pub(super) struct Block(Vec<Statement>);
+pub(super) struct Block(Vec<Statement>, Option<SharedScope>);
 
 impl Block {
     /// Convert a top-level block to a string
@@ -14,6 +17,22 @@ impl Block {
     /// As opposed to the normal to_string, this doesn't include braces or any indentation.
     pub fn to_string_top_level(&self) -> String {
         self.0.iter().join("\n")
+    }
+
+    pub fn scope(&self) -> Option<SharedScope> {
+        self.1.as_ref().map(Rc::clone)
+    }
+
+    pub fn set_scope(&mut self, scope: SharedScope) {
+        self.1 = Some(scope);
+    }
+
+    pub fn ensure_scope(&mut self, parent: SharedScope) -> SharedScope {
+        match &self.1 {
+            Some(scope) => scope.borrow_mut().set_parent(parent),
+            None => self.1 = Some(Scope::new(Some(parent))),
+        }
+        Rc::clone(self.1.as_ref().unwrap())
     }
 }
 
@@ -37,7 +56,7 @@ impl Display for Block {
 //#region Vec wrapper impls for Block
 impl From<Vec<Statement>> for Block {
     fn from(value: Vec<Statement>) -> Self {
-        Self(value)
+        Self(value, None)
     }
 }
 
@@ -83,20 +102,6 @@ impl<'a> IntoIterator for &'a mut Block {
 }
 //#endregion
 
-#[derive(Debug, PartialEq, Clone)]
-pub(super) struct Variable(pub String, pub Option<Box<Variable>>); // variable with zero or more attribute accesses
-
-impl Display for Variable {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(f, "#{}", self.0)?;
-        if let Some(ref v) = self.1 {
-            v.fmt(f)?;
-        }
-
-        Ok(())
-    }
-}
-
 #[derive(Debug, Clone)]
 pub(super) enum Expression {
     ReferenceDeclaration(Box<Expression>, Box<Expression>),
@@ -136,6 +141,17 @@ impl Expression {
         }
     }
 
+    pub fn declaration_mut(&mut self) -> Option<(&mut Self, &mut Self)> {
+        match self {
+            Self::ReferenceDeclaration(ref mut lhs, ref mut rhs)
+            | Self::ValueDeclaration(ref mut lhs, ref mut rhs) => {
+                Some((lhs.as_mut(), rhs.as_mut()))
+            }
+            Self::Global(e) => e.declaration_mut(),
+            _ => None,
+        }
+    }
+
     pub fn inner_blocks_mut(&mut self) -> Vec<(&mut [String], &mut Block)> {
         match self {
             Expression::ReferenceDeclaration(_, rhs) | Expression::ValueDeclaration(_, rhs) => {
@@ -149,6 +165,36 @@ impl Expression {
             Expression::FunctionDefinition(args, block) => vec![(args, block)],
             Expression::Global(e) => e.inner_blocks_mut(),
             _ => vec![],
+        }
+    }
+
+    pub fn walk<F: Fn(&Self)>(&self, f: &F) {
+        match self {
+            Expression::ReferenceDeclaration(lhs, rhs) | Expression::ValueDeclaration(lhs, rhs) => {
+                f(lhs);
+                lhs.walk(f);
+                f(rhs);
+                rhs.walk(f);
+            }
+            Expression::FunctionCall(_, args) => {
+                for arg in args {
+                    f(arg);
+                    arg.walk(f);
+                }
+            }
+            Expression::MethodCall(obj, _, args) => {
+                f(obj);
+                obj.walk(f);
+                for arg in args {
+                    f(arg);
+                    arg.walk(f);
+                }
+            }
+            Expression::Global(e) => {
+                f(e);
+                e.walk(f);
+            }
+            _ => (),
         }
     }
 
@@ -484,7 +530,7 @@ pub(super) fn parser<'src>(
             .ignore_then(condition_block)
             .then(block.clone().or_not())
             .then_ignore(semicolon.or_not())
-            .map(|(c, b)| Statement::Conditional(c, b.map(Block)));
+            .map(|(c, b)| Statement::Conditional(c, b.map(|b| Block(b, None))));
 
         let object_init = expr
             .clone()
@@ -506,7 +552,10 @@ pub(super) fn parser<'src>(
         conditional.or(return_stmt).or(object_init).or(stmt_expr)
     });
 
-    stmt.repeated().collect().then_ignore(end()).map(Block)
+    stmt.repeated()
+        .collect()
+        .then_ignore(end())
+        .map(|b| Block(b, None))
 }
 
 fn get_line_number(text: &str, index: usize) -> (usize, usize) {
