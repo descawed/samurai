@@ -383,7 +383,7 @@ impl Default for Signature {
 pub(super) type SharedScope = Rc<RefCell<Scope>>;
 pub(super) type SharedSignature = Rc<RefCell<Signature>>;
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub(super) enum ScriptValue {
     Scalar(EnumType),
     Function(SharedSignature),
@@ -396,6 +396,16 @@ impl ScriptValue {
             &Self::Scalar(t) => t,
             Self::Function(sig) => sig.borrow().return_type(),
             _ => EnumType::default(),
+        }
+    }
+}
+
+impl Clone for ScriptValue {
+    fn clone(&self) -> Self {
+        match self {
+            &Self::Scalar(t) => Self::Scalar(t),
+            Self::Function(sig) => Self::Function(Rc::new(RefCell::new(sig.borrow().clone()))),
+            Self::Object(scope) => Self::Object(Rc::new(RefCell::new(scope.borrow().clone()))),
         }
     }
 }
@@ -430,7 +440,7 @@ impl Scope {
         }))
     }
 
-    pub fn new_global(constants: Option<HashMap<String, EnumType>>) -> SharedScope {
+    pub fn new_global(constants: Option<HashMap<String, EnumType>>) -> (SharedScope, SharedScope) {
         let mut functions = HashMap::new();
         for (&name, signature) in SIGNATURES.iter() {
             functions.insert(String::from(name), Rc::new(RefCell::new(signature.clone())));
@@ -443,10 +453,12 @@ impl Scope {
             parent: None,
         }));
 
+        let prototype = this.new_child();
+
         this.borrow_mut()
             .objects
-            .insert(String::from("object"), Rc::downgrade(&this.new_child()));
-        this
+            .insert(String::from("object"), Rc::downgrade(&prototype));
+        (this, prototype)
     }
 
     pub fn clone_shared(&self) -> SharedScope {
@@ -460,6 +472,9 @@ impl Scope {
     // I've decided not to make this an Option for now because I can't currently envision a
     // scenario where we would change the global scope to not be the global scope
     pub fn set_parent(&mut self, parent: SharedScope) {
+        if std::ptr::eq(parent.as_ptr(), self) {
+            panic!("Tried to set parent to self");
+        }
         self.parent = Some(parent);
     }
 
@@ -553,7 +568,10 @@ impl Scope {
                 {
                     Some((None, name.as_str()))
                 } else {
-                    parent!(self, lookup_definition_scope_local(var))
+                    match parent!(self, lookup_definition_scope_local(var)) {
+                        Some((None, name)) => Some((self.parent(), name)),
+                        result => result,
+                    }
                 }
             }
             Variable(name, Some(attr)) => Self::lookup_attribute_definition_scope(
@@ -569,7 +587,7 @@ impl Scope {
     ) -> Option<(Option<SharedScope>, &'a str)> {
         match var {
             Variable(name, None) => match parent!(self, lookup_definition_scope_global(var)) {
-                Some((None, _)) => Some((self.parent.as_ref().map(Rc::clone), name.as_str())),
+                Some((None, _)) => Some((self.parent(), name.as_str())),
                 None => {
                     if self.objects.contains_key(name)
                         || self.functions.contains_key(name)
@@ -1023,15 +1041,11 @@ impl ScopeExt for SharedScope {
 
     fn define_local_object(&mut self, var: &Variable, attributes: SharedScope) {
         let (object, name) = Scope::get_object_for_attribute_local(self, var);
-        attributes.borrow_mut().set_parent(Rc::clone(&object));
         object.borrow_mut().add_object(name, attributes);
     }
 
     fn define_local(&mut self, var: &Variable, value: ScriptValue) {
         let (object, name) = Scope::get_object_for_attribute_local(self, var);
-        if let ScriptValue::Object(ref obj) = value {
-            obj.borrow_mut().set_parent(Rc::clone(&object));
-        }
         object.borrow_mut().add(name, value);
     }
 
@@ -1049,7 +1063,6 @@ impl ScopeExt for SharedScope {
 
     fn define_global_object(&mut self, var: &Variable, attributes: SharedScope) {
         let (object, name) = Scope::get_object_for_attribute_global(self, var);
-        attributes.borrow_mut().set_parent(Rc::clone(&object));
         object.borrow_mut().add_object(name, attributes);
     }
 

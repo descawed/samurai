@@ -27,7 +27,7 @@ impl Analyzer {
     ) {
         let constant_map: Option<HashMap<_, _>> =
             config.map(|c| c.iter().map(|((t, _), n)| (n.clone(), *t)).collect());
-        let global_scope = Scope::new_global(constant_map);
+        let (global_scope, _prototype_object) = Scope::new_global(constant_map);
         script.set_scope(global_scope);
 
         // repeatedly process and infer types until we stop finding anything new
@@ -384,6 +384,7 @@ fn get_expression_type(scope: &SharedScope, expr: &Expression) -> Option<ScriptV
         Expression::FunctionDefinition(args, _) => Some(ScriptValue::Function(Rc::new(
             RefCell::new(Signature::args(vec![EnumType::default(); args.len()])),
         ))),
+        Expression::Int(_) => Some(ScriptValue::Scalar(EnumType::Any)),
         _ => None,
     }
 }
