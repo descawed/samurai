@@ -220,6 +220,7 @@ lazy_static! {
         "AddSamuraiValue" => Signature::args(vec![EnumType::Character]),
         "SubSamuraiValue" => Signature::args(vec![EnumType::Character]),
         "SetLineAction" => Signature::args(vec![EnumType::Character]),
+        "GetMapID" => Signature::args(vec![]).returns(EnumType::Map),
         "SetMapID" => Signature::args(vec![EnumType::Map]),
         "SetCharLevel" => Signature::args(vec![EnumType::Character]),
         "SetEventUseCharList" => Signature::varargs(EnumType::Character),

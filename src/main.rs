@@ -179,6 +179,10 @@ fn cli() -> Command {
                                 .default_value("shift-jis")
                         )
                         .arg(
+                            arg!(-c --config <CONFIG> "Path to config.h. If provided, the include of config.h from the formatter will be removed and symbolic constants from the config will be replaced with literals.")
+                                .value_parser(clap::value_parser!(PathBuf))
+                        )
+                        .arg(
                             arg!(<SCRIPT> "Path to script file")
                                 .value_parser(clap::value_parser!(PathBuf)),
                         )
@@ -461,9 +465,15 @@ fn format_script(
 fn unformat_script(
     script_path: &Path,
     output_path: Option<&Path>,
+    config_path: Option<&Path>,
     encoding: Encoding,
 ) -> Result<()> {
-    let text = script::unformat_script(&fs::read_to_string(script_path)?);
+    let mut formatter = ScriptFormatter::new();
+    if let Some(path) = config_path {
+        let config_text = fs::read_to_string(path)?;
+        formatter.use_config(&config_text)?;
+    }
+    let text = formatter.unformat_script(&fs::read_to_string(script_path)?)?;
     let raw = encoding.convert_to(&text);
     if let Some(output_path) = output_path {
         fs::write(output_path, raw)?;
@@ -663,8 +673,14 @@ fn main() -> Result<()> {
                 let output_path = unformat_matches.get_one::<PathBuf>("OUTPUT");
                 let encoding =
                     Encoding::from_str(unformat_matches.get_one::<String>("encoding").unwrap())?;
+                let config_path = unformat_matches.get_one::<PathBuf>("config");
 
-                unformat_script(script_path, output_path.map(PathBuf::as_path), encoding)?;
+                unformat_script(
+                    script_path,
+                    output_path.map(PathBuf::as_path),
+                    config_path.map(PathBuf::as_path),
+                    encoding,
+                )?;
             }
             _ => unreachable!(),
         },

@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 
 use anyhow::Result;
+use regex::Regex;
 
 mod analysis;
 mod parse;
@@ -360,6 +361,39 @@ impl ScriptFormatter {
             Some(num_spaces) => text.replace('\t', " ".repeat(num_spaces).as_str()),
             None => text,
         })
+    }
+
+    pub fn unformat_script<T: AsRef<str>>(&self, script: T) -> Result<String> {
+        if self.config.is_some() {
+            let mut block = parse::parse(script)?;
+            if block.is_empty() {
+                return Ok(String::new());
+            }
+
+            if let Statement::Expression(Expression::Global(ref expr)) = block[0] {
+                if let Expression::FunctionCall(ref name, ref args) = **expr {
+                    if name == "Include" && args.len() == 1 {
+                        if let Expression::String(ref arg) = args[0] {
+                            if arg == "config.h" {
+                                // remove the config.h include
+                                block.remove(0);
+                            }
+                        }
+                    }
+                }
+            }
+
+            let mut text = block.to_string_top_level();
+            for ((_, value), name) in self.config.as_ref().unwrap().iter() {
+                let re = Regex::new(&format!("\\$#{}\\b", name))?;
+                let string_value = value.to_string();
+                text = re.replace_all(&text, string_value.as_str()).into_owned();
+            }
+
+            Ok(unformat_script(text.as_str()))
+        } else {
+            Ok(unformat_script(script.as_ref()))
+        }
     }
 }
 
