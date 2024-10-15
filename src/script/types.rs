@@ -291,6 +291,7 @@ lazy_static! {
         "WeaponOff" => Signature::args(vec![EnumType::Character, EnumType::Character]),
         "Dead" => Signature::args(vec![EnumType::Character, EnumType::Character]),
         "Watch" => Signature::args(vec![EnumType::Character, EnumType::Character]),
+        "AIStatus" => Signature::args(vec![EnumType::Character, EnumType::Ai]),
     };
 }
 
