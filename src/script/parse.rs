@@ -332,9 +332,13 @@ impl Display for Statement {
 
 pub(super) fn parser<'src>(
 ) -> impl Parser<'src, &'src str, Block, extra::Err<Rich<'src, char, SimpleSpan<usize>>>> {
-    let int = text::int(10).from_str().unwrapped().map(Expression::Int);
+    let int = text::digits(10)
+        .to_slice()
+        .from_str()
+        .unwrapped()
+        .map(Expression::Int);
 
-    let float = text::int(10)
+    let float = text::digits(10)
         .then(just('.'))
         // need to use digits(10) instead of int(10) because otherwise we won't match a fractional
         // part that consists solely of multiple zeroes
@@ -917,5 +921,16 @@ mod tests {
             block[0],
             Statement::Expression(Expression::FunctionCall(_, _))
         ));
+    }
+
+    #[test]
+    fn test_leading_zero() {
+        let stmt = one_statement("SetEventID 09;");
+        let Statement::Expression(Expression::FunctionCall(ref s, ref args)) = stmt else {
+            panic!("Statement was not a function call expression");
+        };
+        assert_eq!(s, "SetEventID");
+        assert_eq!(args.len(), 1);
+        assert!(matches!(args[0], Expression::Int(9)));
     }
 }
