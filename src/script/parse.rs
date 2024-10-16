@@ -409,7 +409,11 @@ pub(super) fn parser<'src>(
             .padded();
 
         let expr = recursive(|expr| {
-            let args = expr.clone().separated_by(just(',')).collect();
+            let args = expr
+                .clone()
+                .separated_by(just(','))
+                .collect()
+                .then_ignore(just(',').padded().or_not()); // allow trailing comma
 
             // https://github.com/zesterer/chumsky/discussions/58
             // if we let the left-hand side of a method call be any expression, we get infinite recursion
@@ -932,5 +936,24 @@ mod tests {
         assert_eq!(s, "SetEventID");
         assert_eq!(args.len(), 1);
         assert!(matches!(args[0], Expression::Int(9)));
+    }
+
+    #[test]
+    fn test_trailing_comma() {
+        let stmt = one_statement("SubEventMode 58, 8, 3, 0,;");
+        let Statement::Expression(Expression::FunctionCall(ref s, ref args)) = stmt else {
+            panic!("Statement was not a function call expression");
+        };
+        assert_eq!(s, "SubEventMode");
+        assert_eq!(args.len(), 4);
+        assert!(matches!(
+            (&args[0], &args[1], &args[2], &args[3]),
+            (
+                Expression::Int(58),
+                Expression::Int(8),
+                Expression::Int(3),
+                Expression::Int(0)
+            )
+        ));
     }
 }
