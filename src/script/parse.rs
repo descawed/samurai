@@ -411,7 +411,7 @@ pub(super) fn parser<'src>(
         let expr = recursive(|expr| {
             let args = expr
                 .clone()
-                .separated_by(just(','))
+                .separated_by(just(',').padded().repeated().at_least(1))
                 .collect()
                 .then_ignore(just(',').padded().or_not()); // allow trailing comma
 
@@ -955,5 +955,17 @@ mod tests {
                 Expression::Int(0)
             )
         ));
+    }
+
+    #[test]
+    fn test_duplicate_comma() {
+        let stmt = one_statement(
+            "SetCameraPos 0, -13.19, 3.96, 4.90, -7.39, 6.96, 9.17, , 0.00, 0.00, 0.00001, 0, 10;",
+        );
+        let Statement::Expression(Expression::FunctionCall(ref s, ref args)) = stmt else {
+            panic!("Statement was not a function call expression");
+        };
+        assert_eq!(s, "SetCameraPos");
+        assert_eq!(args.len(), 12);
     }
 }
