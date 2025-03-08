@@ -705,15 +705,6 @@ impl Scope {
         }
     }
 
-    fn lookup_scalar_local(&self, name: &str) -> Option<EnumType> {
-        self.lookup_own_scalar(name)
-            .or_else(|| parent!(self, lookup_scalar_local(name)))
-    }
-
-    fn lookup_scalar_global(&self, name: &str) -> Option<EnumType> {
-        parent!(self, lookup_scalar_global(name)).or_else(|| self.lookup_own_scalar(name))
-    }
-
     fn lookup_object_local(&self, name: &str) -> Option<SharedScope> {
         self.lookup_own_object(name)
             .or_else(|| parent!(self, lookup_object_local(name)))
@@ -741,15 +732,6 @@ impl Scope {
         parent!(self, lookup_var_global(name)).or_else(|| self.lookup_var_local(name))
     }
 
-    pub fn lookup_scalar_attribute(&self, var: &Variable) -> Option<EnumType> {
-        match var {
-            Variable(name, None) => self.lookup_own_scalar(name),
-            Variable(name, Some(attr)) => self
-                .lookup_own_object(name)
-                .and_then(|o| o.borrow().lookup_scalar_attribute(attr.as_ref())),
-        }
-    }
-
     pub fn lookup_function_attribute(&self, var: &Variable) -> Option<SharedSignature> {
         match var {
             Variable(name, None) => self.lookup_own_function(name),
@@ -775,26 +757,6 @@ impl Scope {
                 .lookup_own_object(name)
                 .and_then(|o| o.borrow().lookup_attribute(attr.as_ref())),
         }
-    }
-
-    pub fn lookup_local_scalar(&self, var: &Variable) -> EnumType {
-        match var {
-            Variable(name, None) => self.lookup_scalar_local(name),
-            Variable(name, Some(attr)) => self
-                .lookup_object_local(name)
-                .and_then(|o| o.borrow().lookup_scalar_attribute(attr.as_ref())),
-        }
-        .unwrap_or_default()
-    }
-
-    pub fn lookup_global_scalar(&self, var: &Variable) -> EnumType {
-        match var {
-            Variable(name, None) => self.lookup_scalar_global(name),
-            Variable(name, Some(attr)) => self
-                .lookup_object_global(name)
-                .and_then(|o| o.borrow().lookup_scalar_attribute(attr.as_ref())),
-        }
-        .unwrap_or_default()
     }
 
     pub fn lookup_local_function(&self, var: &Variable) -> Option<SharedSignature> {
@@ -858,14 +820,6 @@ impl Scope {
             Variable(name, Some(attr)) => self
                 .lookup_object_global(name)
                 .and_then(|o| o.borrow().lookup_attribute(attr.as_ref())),
-        }
-    }
-
-    pub fn lookup_scalar(&self, var: &Variable, is_global: bool) -> EnumType {
-        if is_global {
-            self.lookup_global_scalar(var)
-        } else {
-            self.lookup_local_scalar(var)
         }
     }
 
