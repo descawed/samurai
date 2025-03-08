@@ -713,14 +713,13 @@ fn main() -> Result<()> {
 
                 let format = export_matches.get_one::<String>("format").unwrap();
 
-                let stack =
-                    export_matches
-                        .get_one::<String>("stack")
-                        .and_then(|s| match s.as_str() {
-                            "h" | "horizontal" => Some(StackDirection::Horizontal),
-                            "v" | "vertical" => Some(StackDirection::Vertical),
-                            _ => None,
-                        });
+                let stack = export_matches
+                    .get_one::<String>("stack-cluts")
+                    .and_then(|s| match s.as_str() {
+                        "h" | "horizontal" => Some(StackDirection::Horizontal),
+                        "v" | "vertical" => Some(StackDirection::Vertical),
+                        _ => None,
+                    });
 
                 export_texture(texture_path, output_path, format, indexes, cluts, stack)?;
             }
