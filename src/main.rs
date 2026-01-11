@@ -303,10 +303,8 @@ fn unpack_volume<S: AsRef<str>>(
         }
 
         let output_path = extract_path.to_path_buf();
-        if let Some(parent) = output_path.parent() {
-            if !parent.exists() {
-                fs::create_dir_all(parent)?;
-            }
+        if let Some(parent) = output_path.parent() && !parent.exists() {
+            fs::create_dir_all(parent)?;
         }
 
         fs::write(&output_path, data)?;
@@ -506,7 +504,7 @@ fn export_texture(
         || (indexes.len() == 1
             && (cluts.len() == 1
                 || stack_direction.is_some()
-                || images.get(indexes[0]).map_or(true, |i| i.num_cluts() <= 1)));
+                || images.get(indexes[0]).is_none_or(|i| i.num_cluts() <= 1)));
 
     if !is_single_image && output_path.exists() && !output_path.is_dir() {
         return Err(anyhow!(

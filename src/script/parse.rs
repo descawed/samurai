@@ -133,8 +133,8 @@ impl Expression {
 
     pub fn declaration_mut(&mut self) -> Option<(&mut Self, &mut Self)> {
         match self {
-            Self::ReferenceDeclaration(ref mut lhs, ref mut rhs)
-            | Self::ValueDeclaration(ref mut lhs, ref mut rhs) => {
+            Self::ReferenceDeclaration(lhs, rhs)
+            | Self::ValueDeclaration(lhs, rhs) => {
                 Some((lhs.as_mut(), rhs.as_mut()))
             }
             Self::Global(e) => e.declaration_mut(),

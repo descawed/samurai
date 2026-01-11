@@ -242,10 +242,10 @@ impl ScriptFormatter {
         // do expression-type-specific processing
         match expr {
             Expression::MethodCall(var, method, args) => {
-                if let (Expression::Variable(var), is_global_obj) = var.unwrap_global() {
-                    if let Some(obj) = scope.borrow().lookup(var, is_global || is_global_obj) {
-                        self.process_method(&obj, method, args);
-                    }
+                if let (Expression::Variable(var), is_global_obj) = var.unwrap_global()
+                    && let Some(obj) = scope.borrow().lookup(var, is_global || is_global_obj)
+                {
+                    self.process_method(&obj, method, args);
                 }
             }
             Expression::FunctionCall(name, args) => {
@@ -257,10 +257,10 @@ impl ScriptFormatter {
                 }
             }
             Expression::ReferenceDeclaration(lhs, rhs) | Expression::ValueDeclaration(lhs, rhs) => {
-                if let (Expression::Variable(ref var), is_global_var) = lhs.unwrap_global() {
-                    if let Some(obj) = scope.borrow().lookup(var, is_global || is_global_var) {
-                        self.use_constant(obj.get_type(), rhs, None);
-                    }
+                if let (Expression::Variable(var), is_global_var) = lhs.unwrap_global()
+                    && let Some(obj) = scope.borrow().lookup(var, is_global || is_global_var)
+                {
+                    self.use_constant(obj.get_type(), rhs, None);
                 }
             }
             _ => (),
@@ -370,17 +370,15 @@ impl ScriptFormatter {
                 return Ok(String::new());
             }
 
-            if let Statement::Expression(Expression::Global(ref expr)) = block[0] {
-                if let Expression::FunctionCall(ref name, ref args) = **expr {
-                    if name == "Include" && args.len() == 1 {
-                        if let Expression::String(ref arg) = args[0] {
-                            if arg == "config.h" {
-                                // remove the config.h include
-                                block.remove(0);
-                            }
-                        }
-                    }
-                }
+            if let Statement::Expression(Expression::Global(ref expr)) = block[0]
+                && let Expression::FunctionCall(ref name, ref args) = **expr
+                && name == "Include"
+                && args.len() == 1
+                && let Expression::String(ref arg) = args[0]
+                && arg == "config.h"
+            {
+                // remove the config.h include
+                block.remove(0);
             }
 
             let mut text = block.to_string_top_level();

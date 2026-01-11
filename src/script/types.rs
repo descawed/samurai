@@ -10,7 +10,7 @@ use common_macros::hash_map;
 use lazy_static::lazy_static;
 use strum::{EnumIter, EnumString};
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash, EnumString, EnumIter)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash, EnumString, EnumIter, Default)]
 pub enum EnumType {
     #[strum(serialize = "MTAS")]
     Animation,
@@ -65,16 +65,11 @@ pub enum EnumType {
     FadeType,
     Initialize,
     Null,
+    #[default]
     Any,               // any other type not identified above
     Select,            // select the type of a following argument
     SendFuncCharacter, // either a character ID or null depending on the previous select arg
     Conflict, // we've detected multiple conflicting types for this value and should treat it as an unknown type
-}
-
-impl Default for EnumType {
-    fn default() -> Self {
-        Self::Any
-    }
 }
 
 impl EnumType {
