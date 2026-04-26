@@ -34,11 +34,14 @@ the path to the game's `script` directory, and an output directory where the for
 
 - A sequence of digits forms an integer literal: `123`
 - A sequence of digits, followed by a period, followed by a sequence of digits, forms a float literal: `123.456`
+- Numeric literals may also start with a minus sign for negative numbers: `-123`/`-123.456`. The minus sign is
+  considered part of the literal, not an operator.
 - Text enclosed in double quotes forms a string literal: `"abcd"`. The escape sequence `\n` is supported to indicate
   a newline. I'm not sure if it's possible to escape quotes as I haven't seen any examples of strings that include a
   quote character.
-- Variables generally start with `#`: `#MyVariable`
-- Function names are generally bare identifiers: `MyFunc`
+- There is no comment syntax that I'm aware of.
+- Variables generally start with `#` (`#MyVariable`) while function names are generally bare identifiers (`MyFunc`).
+  This is not a hard requirement, though – variables may omit the `#` prefix and functions may include it.
 - Both variable and function names may be prefixed with `$` to search for or define them in the global scope:
   `$#MyGlobalVariable`, `$MyGlobalFunc`. This doesn't actually seem to _require_ the name to be in the global scope;
   rather, I believe it inverts the search order, so instead of looking for the name in the current scope and recursively
@@ -50,7 +53,8 @@ the path to the game's `script` directory, and an output directory where the for
 - `|` is used to define a variable by reference, i.e. the variable on the left will be a reference to the value on
   the right: `#MyVar | #SomeObj`
 - Variable definitions are expressions; e.g., something like the following is legal: `(#MyVar : 4) add 1`
-- All statements end with `;`: `#MyVar | #SomeObj;`
+- Statements end with `;`: `#MyVar | #SomeObj;`. However, the semicolon is optional if the statement is the last one in
+  the block. Empty statements (a lone `;`) are allowed.
 - Function calls consist of the function name optionally followed by a comma-delimited list of argument expressions:
   ```
   MyFunc 1, 2;
@@ -63,16 +67,20 @@ the path to the game's `script` directory, and an output directory where the for
   `#Object#SubObject#SubSubObject#Attribute`.
 - Function and method calls are expressions and their result may be assigned to a variable:
   `#IsPlayerDead | $GetCharDead $#CHID_SHUJINKO;`
-- Function definitions start with `?F`, optionally followed by an argument list in parentheses (no `#` in front of the
-  argument names), followed by the function body in `{}`. This is an expression and can be assigned to a variable, which
-  is how functions are usually defined. Usually, the `#` prefix is used on the variable when defining the function but
-  not when calling it:
+- Function definitions start with `?F`, optionally followed by an argument list in parentheses (typically with no `#` in
+  front of the argument names, although it is allowed), followed by the function body in `{}`. This is an expression and
+  can be assigned to a variable, which is how functions are usually defined. Usually, the `#` prefix is used on the
+  variable when defining the function but not when calling it:
   ```
   #MyFunc | ?F (a, b, c) {
     #LocalVar : #a;
   };
   MyFunc 1, 2, 3;
   ```
+  Note that a small number of scripts have function definitions which omit the `?F`, or have only a `?` with no `F`.
+  The formatter will parse these and format them with the full `?F` keyword, but I think these may actually be sytnax
+  errors that don't parse correctly in the game. Further investigation is needed.
+- Consecutive commas in argument lists are coalesced. For example, `f 1, , 2` parses as two arguments.
 - If statements start with `?i`, followed by a condition in parentheses, followed by a `{}` block:
   ```
   ?i (#a eq #b) {
@@ -110,8 +118,11 @@ the path to the game's `script` directory, and an output directory where the for
   ```
   Note that although built-in functions can return values, there is no syntax for a user-defined function to return a
   value. If you need to return a value, you'll have to store it in a global variable that the caller can check.
+- The language supports a `?I` keyword for ternary conditional expressions, `?W` for while loops, and `/break` to break
+  out of a loop. None of these are used in any real scripts, so I haven't taken the time to investigate how they work,
+  and the formatter doesn't support them.
 - Object attributes are defined via the `@` operator. The left-hand side of the operator is the object to add the
-  attributes to and the right-hand side is a block `{}`. This is a normal code block which can contain any arbitrary
+  attributes to and the right-hand side is a block `{}`. This is a normal code block that can contain any arbitrary
   statements, but any variables defined in this block become attributes/methods of the object:
   ```
   (#ClassFLAG : #object) @{
@@ -133,8 +144,8 @@ Everything is an object, but there are a few built-in subtypes with predefined m
 
 - Floats provide basic math methods: `add`, `sub`, `mul`, `div`, and `=` to copy the value from another float. All of
   these methods modify the float object in-place, but they also return the object for method chaining. Floats also
-  provide comparison methods: `eq`, `lt`, `le`, `gt`, `ge`. There is no boolean type; the result of comparisons is an
-  integer 1 or 0.
+  provide comparison methods: `eq`, `lt`, `le`, `gt`, `ge`. `<` and `>` are also available as aliases for `lt` and `gt`.
+  There is no boolean type; the result of comparisons is an integer 1 or 0.
 - Integers provide all the same methods as floats, but because they pull double-duty as booleans, they also have the
   logical methods `and` and `or`. Note that neither floats nor integers have a `ne` method; instead, use the built-in
   function `not` to invert the result of an `eq` (e.g. `not (#a eq #b)`).
