@@ -364,8 +364,7 @@ pub(super) fn parser<'src>(
         .map(Expression::String);
 
     // FIXME: this isn't quite right. I've seen functions that reference their arguments with an
-    //  identifier alone and no #, and also functions that reference their arguments with a $,
-    //  which I thought was used for global references. need more research.
+    //  identifier alone and no #. need more research.
     let var = recursive(|var| {
         just('#').ignore_then(text::ident()).then(var.or_not()).map(
             |(v, a): (&str, Option<Expression>)| {
