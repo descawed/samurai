@@ -447,10 +447,11 @@ pub(super) fn parser<'src>(
                 .then(expr.clone())
                 .map(|(l, r)| Expression::ValueDeclaration(Box::new(l), Box::new(r)));
 
-            // a small number of scripts have function definitions that are lacking the ?F keyword.
-            // I don't know if this even works as intended in-game, but for compatibility purposes,
-            // we'll parse it.
-            let func_def = just("?F")
+            // a small number of scripts have function definitions that are lacking the ?F keyword,
+            // and some have only a ? with no F. I don't know if this even works as intended
+            // in-game, but for compatibility purposes, we'll parse it.
+            let func_def = just('?')
+                .then_ignore(just('F').or_not())
                 .padded()
                 .or_not()
                 .ignore_then(
@@ -1088,5 +1089,25 @@ mod tests {
             panic!("Statement was not an if statement with no else or else-if");
         };
         assert_eq!(block.len(), 2);
+    }
+
+    #[test]
+    fn test_func_def_with_no_f() {
+        let stmt = one_statement(
+            "
+        #MyFunc | ?{
+            $Print \"my cool function\";
+        };
+        ",
+        );
+        let Statement::Expression(Expression::ReferenceDeclaration(var, value)) = stmt else {
+            panic!("Statement was not a reference declaration expression");
+        };
+        assert!(matches!(*var, Expression::Variable(Variable(ref s, None)) if s == "MyFunc"));
+        let Expression::FunctionDefinition(args, body) = *value else {
+            panic!("Value was not a function definition");
+        };
+        assert!(args.is_empty());
+        assert_eq!(body.len(), 1);
     }
 }
