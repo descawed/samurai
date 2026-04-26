@@ -20,8 +20,13 @@ are all on one line. Use `samurai script format` to convert to UTF-8 and apply f
 command to the game's `config.h` to have it replace literals with symbolic constants. Due to the parsing library used,
 this tool's parser is stricter than the game's own parser and a few scripts will fail to parse. You can use the
 `--simple` flag to apply only basic formatting without using the full parser, or edit the script to "correct" the syntax
-prior to formatting. The `vscode-extension` directory in this repo contains a VS Code extension providing syntax
-highlighting for this language.
+prior to formatting. Specifically, the only script currently failing is p01/e21/e21.sol, which you can fix by changing
+the line `$Flag_Fukki = 1` to `$#Flag_Fukki = 1`.
+
+The `script` directory in this repo contains some utilities for working with scripts. The `vscode-extension` directory
+contains a VS Code extension providing syntax highlighting for this language. `format-scripts.sh` is a shell script
+which can be used to batch-format all the game's scripts. It takes two arguments: an input directory, which should be
+the path to the game's `script` directory, and an output directory where the formatted scripts will be written.
 
 ### Syntax
 
