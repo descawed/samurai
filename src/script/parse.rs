@@ -452,8 +452,9 @@ pub(super) fn parser<'src>(
                 .padded()
                 .or_not()
                 .ignore_then(
-                    text::ident()
-                        .to_slice()
+                    just('#')
+                        .or_not()
+                        .ignore_then(text::ident().to_slice())
                         .map(String::from)
                         .padded()
                         .separated_by(just(','))
@@ -1027,5 +1028,27 @@ mod tests {
             panic!("Value was not a number literal");
         };
         assert_eq!(num, 4);
+    }
+
+    #[test]
+    fn test_parameter_with_sigil() {
+        let stmt = one_statement(
+            "
+        #MyFunc | (id0,#id1){
+            $Print \"my cool function\";
+        };
+        ",
+        );
+        let Statement::Expression(Expression::ReferenceDeclaration(var, value)) = stmt else {
+            panic!("Statement was not a reference declaration expression");
+        };
+        assert!(matches!(*var, Expression::Variable(Variable(ref s, None)) if s == "MyFunc"));
+        let Expression::FunctionDefinition(args, body) = *value else {
+            panic!("Value was not a function definition");
+        };
+        assert_eq!(args.len(), 2);
+        assert_eq!(args[0], "id0");
+        assert_eq!(args[1], "id1");
+        assert_eq!(body.len(), 1);
     }
 }
