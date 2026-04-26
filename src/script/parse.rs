@@ -308,6 +308,7 @@ pub(super) enum Statement {
     Conditional(Conditional, Option<Block>), // conditional with an optional else block
     Expression(Expression),
     Return,
+    Empty,
     // TODO: loops, breaks, ternary
 }
 
@@ -326,6 +327,7 @@ impl Display for Statement {
             }
             Self::Expression(expr) => expr.fmt(f)?,
             Self::Return => write!(f, "/return")?,
+            Self::Empty => {}
         }
 
         write!(f, ";")
@@ -525,7 +527,9 @@ pub(super) fn parser<'src>(
             .then_ignore(semicolon.or(just('}').padded().rewind()))
             .map(Statement::Expression);
 
-        conditional.or(return_stmt).or(object_init).or(stmt_expr)
+        let empty_stmt = semicolon.to(Statement::Empty);
+
+        conditional.or(return_stmt).or(object_init).or(stmt_expr).or(empty_stmt)
     });
 
     stmt.repeated()
@@ -1050,5 +1054,39 @@ mod tests {
         assert_eq!(args[0], "id0");
         assert_eq!(args[1], "id1");
         assert_eq!(body.len(), 1);
+    }
+
+    #[test]
+    fn test_extra_semicolon() {
+        let parser = parser();
+        let mut result = parser.parse("\
+        SetFixCamera -1, 0;
+        ;
+        ").unwrap().into_iter();
+        let Some(Statement::Expression(Expression::FunctionCall(ref s, ref args))) = result.next() else {
+            panic!("Statement was not a function call expression");
+        };
+        assert_eq!(s, "SetFixCamera");
+        assert_eq!(args.len(), 2);
+        assert!(matches!(
+            (&args[0], &args[1]),
+            (Expression::Int(-1), Expression::Int(0))
+        ));
+
+        assert!(matches!(result.next(), Some(Statement::Empty)));
+    }
+
+    #[test]
+    fn test_extra_semicolon_in_block() {
+        let stmt = one_statement("\
+        ?i( #wp eq 0 ) {
+            $SetFixCamera -1, 0;
+            ;
+        };
+        ");
+        let Statement::Conditional(Conditional(_, block, None), None) = stmt else {
+            panic!("Statement was not an if statement with no else or else-if");
+        };
+        assert_eq!(block.len(), 2);
     }
 }
