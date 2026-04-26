@@ -1,0 +1,158 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "Samurai Script",
+  "scopeName": "source.samurai-script",
+  "patterns": [
+    { "include": "#strings" },
+    { "include": "#numbers" },
+    { "include": "#function-definition" },
+    { "include": "#keywords" },
+    { "include": "#return-statement" },
+    { "include": "#variables" },
+    { "include": "#global-prefix" },
+    { "include": "#builtin-functions" },
+    { "include": "#builtin-methods" },
+    { "include": "#operators" },
+    { "include": "#identifiers" },
+    { "include": "#punctuation" }
+  ],
+  "repository": {
+    "strings": {
+      "name": "string.quoted.double.samurai-script",
+      "begin": "\"",
+      "beginCaptures": {
+        "0": { "name": "punctuation.definition.string.begin.samurai-script" }
+      },
+      "end": "\"",
+      "endCaptures": {
+        "0": { "name": "punctuation.definition.string.end.samurai-script" }
+      },
+      "patterns": [
+        {
+          "name": "constant.character.escape.samurai-script",
+          "match": "\\\\n"
+        }
+      ]
+    },
+    "numbers": {
+      "patterns": [
+        {
+          "name": "constant.numeric.float.samurai-script",
+          "match": "-?\\b[0-9]+\\.[0-9]+\\b"
+        },
+        {
+          "name": "constant.numeric.integer.samurai-script",
+          "match": "-?\\b[0-9]+\\b"
+        }
+      ]
+    },
+    "function-definition": {
+      "begin": "(\\?F)\\s*(\\()",
+      "beginCaptures": {
+        "1": { "name": "storage.type.function.samurai-script" },
+        "2": { "name": "punctuation.section.parens.begin.samurai-script" }
+      },
+      "end": "\\)",
+      "endCaptures": {
+        "0": { "name": "punctuation.section.parens.end.samurai-script" }
+      },
+      "patterns": [
+        {
+          "name": "variable.parameter.samurai-script",
+          "match": "[A-Za-z_][A-Za-z_0-9]*"
+        },
+        {
+          "name": "punctuation.separator.samurai-script",
+          "match": ","
+        }
+      ]
+    },
+    "keywords": {
+      "patterns": [
+        {
+          "name": "keyword.control.conditional.samurai-script",
+          "match": "\\?i\\b"
+        },
+        {
+          "name": "storage.type.function.samurai-script",
+          "match": "\\?F\\b"
+        }
+      ]
+    },
+    "return-statement": {
+      "name": "keyword.control.flow.return.samurai-script",
+      "match": "/return\\b"
+    },
+    "variables": {
+      "match": "(#)([A-Za-z_][A-Za-z_0-9]*)",
+      "captures": {
+        "1": { "name": "punctuation.definition.variable.samurai-script" },
+        "2": { "name": "variable.other.samurai-script" }
+      }
+    },
+    "global-prefix": {
+      "name": "storage.modifier.global.samurai-script",
+      "match": "\\$"
+    },
+    "builtin-functions": {
+      "name": "support.function.builtin.samurai-script",
+      "match": "\\b(?:not|list)\\b"
+    },
+    "builtin-methods": {
+      "name": "support.function.builtin.samurai-script",
+      "match": "\\b(?:add|sub|mul|div|eq|lt|le|gt|ge|and|or|at)\\b"
+    },
+    "operators": {
+      "patterns": [
+        {
+          "name": "keyword.operator.declaration.value.samurai-script",
+          "match": ":"
+        },
+        {
+          "name": "keyword.operator.declaration.reference.samurai-script",
+          "match": "\\|"
+        },
+        {
+          "name": "keyword.operator.object.samurai-script",
+          "match": "@"
+        },
+        {
+          "name": "keyword.operator.comparison.samurai-script",
+          "match": "[=<>]"
+        }
+      ]
+    },
+    "identifiers": {
+      "name": "entity.name.function.samurai-script",
+      "match": "\\b[A-Za-z_][A-Za-z_0-9]*\\b"
+    },
+    "punctuation": {
+      "patterns": [
+        {
+          "name": "punctuation.terminator.statement.samurai-script",
+          "match": ";"
+        },
+        {
+          "name": "punctuation.separator.samurai-script",
+          "match": ","
+        },
+        {
+          "name": "punctuation.section.block.begin.samurai-script",
+          "match": "\\{"
+        },
+        {
+          "name": "punctuation.section.block.end.samurai-script",
+          "match": "\\}"
+        },
+        {
+          "name": "punctuation.section.parens.begin.samurai-script",
+          "match": "\\("
+        },
+        {
+          "name": "punctuation.section.parens.end.samurai-script",
+          "match": "\\)"
+        }
+      ]
+    }
+  }
+}

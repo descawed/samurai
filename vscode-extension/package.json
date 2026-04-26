@@ -1,0 +1,35 @@
+{
+  "name": "samurai-script",
+  "displayName": "Way of the Samurai Script",
+  "description": "Syntax highlighting for Way of the Samurai (2002) .sol script files",
+  "version": "0.1.0",
+  "publisher": "descawed",
+  "engines": {
+    "vscode": "^1.74.0"
+  },
+  "categories": [
+    "Programming Languages"
+  ],
+  "contributes": {
+    "languages": [
+      {
+        "id": "samurai-script",
+        "aliases": [
+          "Samurai Script",
+          "samurai-script"
+        ],
+        "extensions": [
+          ".sol"
+        ],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "samurai-script",
+        "scopeName": "source.samurai-script",
+        "path": "./syntaxes/samurai-script.tmLanguage.json"
+      }
+    ]
+  }
+}

@@ -20,7 +20,8 @@ are all on one line. Use `samurai script format` to convert to UTF-8 and apply f
 command to the game's `config.h` to have it replace literals with symbolic constants. Due to the parsing library used,
 this tool's parser is stricter than the game's own parser and a few scripts will fail to parse. You can use the
 `--simple` flag to apply only basic formatting without using the full parser, or edit the script to "correct" the syntax
-prior to formatting.
+prior to formatting. The `vscode-extension` directory in this repo contains a VS Code extension providing syntax
+highlighting for this language.
 
 ### Syntax
 
