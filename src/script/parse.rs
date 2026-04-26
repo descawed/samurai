@@ -8,6 +8,8 @@ use itertools::Itertools;
 
 use super::types::{Scope, SharedScope, Variable};
 
+const IDENTIFIER_CHARACTERS: &str = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_";
+
 #[derive(Debug, Clone)]
 pub(super) struct Block(Vec<Statement>, Option<SharedScope>);
 
@@ -366,10 +368,12 @@ pub(super) fn parser<'src>(
     // FIXME: this isn't quite right. I've seen functions that reference their arguments with an
     //  identifier alone and no #. need more research.
     let var = recursive(|var| {
-        just('#').ignore_then(text::ident()).then(var.or_not()).map(
-            |(v, a): (&str, Option<Expression>)| {
+        just('#')
+            .ignore_then(one_of(IDENTIFIER_CHARACTERS).repeated().at_least(1).collect::<String>())
+            .then(var.or_not()).map(
+            |(v, a): (String, Option<Expression>)| {
                 Expression::Variable(Variable(
-                    String::from(v),
+                    v,
                     a.map(|e| match e {
                         Expression::Variable(v) => Box::new(v),
                         _ => unreachable!(),
@@ -1008,7 +1012,20 @@ mod tests {
         let Expression::FunctionDefinition(args, body) = *value else {
             panic!("Value was not a function definition");
         };
-        assert!(args.len() == 2);
+        assert_eq!(args.len(), 2);
         assert_eq!(body.len(), 1);
+    }
+
+    #[test]
+    fn test_identifier_starting_with_digit() {
+        let stmt = one_statement("#2ndret_pliantly : 4;");
+        let Statement::Expression(Expression::ValueDeclaration(var, value)) = stmt else {
+            panic!("Statement was not a value declaration expression");
+        };
+        assert!(matches!(*var, Expression::Variable(Variable(ref s, None)) if s == "2ndret_pliantly"));
+        let Expression::Int(num) = *value else {
+            panic!("Value was not a number literal");
+        };
+        assert_eq!(num, 4);
     }
 }
