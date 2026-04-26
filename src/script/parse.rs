@@ -371,6 +371,7 @@ pub(super) fn parser<'src>(
     //  identifier alone and no #. need more research.
     let var = recursive(|var| {
         just('#')
+            .padded() // at least one script has a variable usage with a space between the # and the identifier
             .ignore_then(one_of(IDENTIFIER_CHARACTERS).repeated().at_least(1).collect::<String>())
             .then(var.or_not()).map(
             |(v, a): (String, Option<Expression>)| {
@@ -657,7 +658,7 @@ mod tests {
     fn test_method_call() {
         let stmt = one_statement("#object method 1, 2;");
         let Statement::Expression(Expression::MethodCall(obj, method, args)) = stmt else {
-            panic!("Statement was not a global expression");
+            panic!("Statement was not a method call");
         };
         assert!(matches!(*obj, Expression::Variable(Variable(ref s, None)) if s == "object"));
         assert_eq!(method, "method");
@@ -1109,5 +1110,18 @@ mod tests {
         };
         assert!(args.is_empty());
         assert_eq!(body.len(), 1);
+    }
+
+    #[test]
+    fn test_space_after_sigil() {
+        let stmt = one_statement("# TalkFlag = 11;");
+        let Statement::Expression(Expression::MethodCall(obj, method, args)) = stmt else {
+            panic!("Statement was not a method call");
+        };
+        assert!(matches!(*obj, Expression::Variable(Variable(ref s, None)) if s == "TalkFlag"));
+        assert_eq!(method, "=");
+        assert_eq!(args.len(), 1);
+        let mut it = args.into_iter();
+        assert!(matches!(it.next().unwrap(), Expression::Int(11)));
     }
 }
