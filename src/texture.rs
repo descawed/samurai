@@ -444,10 +444,6 @@ impl ImageDescriptor {
     pub const fn packed_width(&self) -> usize {
         self.packed_width as usize
     }
-
-    pub const fn packed_height(&self) -> usize {
-        self.packed_height as usize
-    }
 }
 
 #[derive(Debug)]
