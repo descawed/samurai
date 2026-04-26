@@ -441,8 +441,12 @@ pub(super) fn parser<'src>(
                 .then(expr.clone())
                 .map(|(l, r)| Expression::ValueDeclaration(Box::new(l), Box::new(r)));
 
+            // a small number of scripts have function definitions that are lacking the ?F keyword.
+            // I don't know if this even works as intended in-game, but for compatibility purposes,
+            // we'll parse it.
             let func_def = just("?F")
                 .padded()
+                .or_not()
                 .ignore_then(
                     text::ident()
                         .to_slice()
@@ -456,11 +460,6 @@ pub(super) fn parser<'src>(
                 )
                 .then(block.clone())
                 .map(|(a, b)| Expression::FunctionDefinition(a.unwrap_or_else(Vec::new), b.into()));
-
-            // a small number of scripts have function definitions that are lacking the ?F keyword.
-            // I don't know if this even works as intended in-game, but for compatibility purposes,
-            // we'll parse it.
-            let bare_func_def = block.clone().map(|body| Expression::FunctionDefinition(Vec::new(), body.into()));
 
             let function =
                 text::ident()
@@ -481,7 +480,6 @@ pub(super) fn parser<'src>(
                 .or(global)
                 .or(function)
                 .or(method)
-                .or(bare_func_def)
                 .or(atom)
                 .or(expr.delimited_by(just('('), just(')')))
                 .padded()
@@ -991,6 +989,26 @@ mod tests {
             panic!("Value was not a function definition");
         };
         assert!(args.is_empty());
+        assert_eq!(body.len(), 1);
+    }
+
+    #[test]
+    fn test_bare_func_with_args() {
+        let stmt = one_statement(
+            "
+        #MyFunc | (id0,id1){
+            $Print \"my cool function\";
+        };
+        ",
+        );
+        let Statement::Expression(Expression::ReferenceDeclaration(var, value)) = stmt else {
+            panic!("Statement was not a reference declaration expression");
+        };
+        assert!(matches!(*var, Expression::Variable(Variable(ref s, None)) if s == "MyFunc"));
+        let Expression::FunctionDefinition(args, body) = *value else {
+            panic!("Value was not a function definition");
+        };
+        assert!(args.len() == 2);
         assert_eq!(body.len(), 1);
     }
 }
