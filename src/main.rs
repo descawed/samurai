@@ -162,6 +162,9 @@ fn cli() -> Command {
                                 .default_value("detect")
                         )
                         .arg(
+                            arg!(-q --quiet "Don't print warnings")
+                        )
+                        .arg(
                             arg!(<SCRIPT> "Path to script file")
                                 .value_parser(clap::value_parser!(PathBuf)),
                         )
@@ -436,6 +439,7 @@ fn format_script(
     use_simple_parser: bool,
     config_path: Option<&Path>,
     encoding: Encoding,
+    quiet: bool,
 ) -> Result<()> {
     let raw = fs::read(script_path)?;
     let text = encoding.convert_from(&raw);
@@ -444,6 +448,7 @@ fn format_script(
         script::format_script(text, tab_width)
     } else {
         let mut formatter = ScriptFormatter::new();
+        formatter.set_quiet(quiet);
         if let Some(path) = config_path {
             let config_text = fs::read_to_string(path)?;
             formatter.use_config(&config_text)?;
@@ -654,6 +659,7 @@ fn main() -> Result<()> {
                 let config_path = format_matches.get_one::<PathBuf>("config");
                 let encoding =
                     Encoding::from_str(format_matches.get_one::<String>("encoding").unwrap())?;
+                let quiet = format_matches.get_flag("quiet");
 
                 format_script(
                     script_path,
@@ -662,6 +668,7 @@ fn main() -> Result<()> {
                     use_simple_parser,
                     config_path.map(PathBuf::as_path),
                     encoding,
+                    quiet,
                 )?;
             }
             Some(("unformat", unformat_matches)) => {

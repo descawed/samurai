@@ -152,6 +152,7 @@ pub fn unformat_script(script: &str) -> String {
 pub struct ScriptFormatter {
     config: Option<HashMap<(EnumType, i32), String>>,
     made_changes: bool,
+    quiet: bool,
 }
 
 impl ScriptFormatter {
@@ -159,7 +160,12 @@ impl ScriptFormatter {
         Self {
             config: None,
             made_changes: false,
+            quiet: false,
         }
+    }
+
+    pub fn set_quiet(&mut self, quiet: bool) {
+        self.quiet = quiet;
     }
 
     fn reset(&mut self) {
@@ -200,10 +206,12 @@ impl ScriptFormatter {
                 self.made_changes = true;
             }
             None => {
-                println!(
-                    "Warning: unexpected value {} for type {:?}",
-                    value, actual_type,
-                );
+                if !self.quiet {
+                    println!(
+                        "Warning: unexpected value {} for type {:?}",
+                        value, actual_type,
+                    );
+                }
             }
         }
     }
