@@ -9,6 +9,7 @@ Build with `cargo build`. All the tools are contained in a single binary called 
 currently provided; use the `help` subcommand or `-h`/`--help` option for details.
 
 - `samurai volume` - List, unpack, or pack volume.dat.
+- `samurai texture` - List information about game textures and convert them to other formats.
 - `samurai script` - Convert and format script files for easier reading. Can also (loosely) reverse the process when
   you're ready to store them back in volume.dat.
 
