@@ -457,6 +457,11 @@ pub(super) fn parser<'src>(
                 .then(block.clone())
                 .map(|(a, b)| Expression::FunctionDefinition(a.unwrap_or_else(Vec::new), b.into()));
 
+            // a small number of scripts have function definitions that are lacking the ?F keyword.
+            // I don't know if this even works as intended in-game, but for compatibility purposes,
+            // we'll parse it.
+            let bare_func_def = block.clone().map(|body| Expression::FunctionDefinition(Vec::new(), body.into()));
+
             let function =
                 text::ident()
                     .padded()
@@ -476,6 +481,7 @@ pub(super) fn parser<'src>(
                 .or(global)
                 .or(function)
                 .or(method)
+                .or(bare_func_def)
                 .or(atom)
                 .or(expr.delimited_by(just('('), just(')')))
                 .padded()
@@ -966,5 +972,25 @@ mod tests {
         };
         assert_eq!(s, "SetCameraPos");
         assert_eq!(args.len(), 12);
+    }
+
+    #[test]
+    fn test_bare_func_def() {
+        let stmt = one_statement(
+            "
+        #MyFunc | {
+            $Print \"my cool function\";
+        };
+        ",
+        );
+        let Statement::Expression(Expression::ReferenceDeclaration(var, value)) = stmt else {
+            panic!("Statement was not a reference declaration expression");
+        };
+        assert!(matches!(*var, Expression::Variable(Variable(ref s, None)) if s == "MyFunc"));
+        let Expression::FunctionDefinition(args, body) = *value else {
+            panic!("Value was not a function definition");
+        };
+        assert!(args.is_empty());
+        assert_eq!(body.len(), 1);
     }
 }
