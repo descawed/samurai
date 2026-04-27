@@ -21,8 +21,14 @@ while IFS= read -r -d '' input_path; do
     output_path=$output_folder/$rel_path
     mkdir -p "$(dirname "$output_path")"
 
-    case "$input_path" in
-        *.sol|*.lst)
+    case $(basename "$input_path") in
+        config.h)
+            # don't use advanced formatting for config.h; it causes recursive variable definitions
+            if ! samurai script format -t 4 -e shift-jis -s "$input_path" "$output_path"; then
+              echo "Failed to format: $input_path" >&2
+            fi
+            ;;
+        *.sol|*.lst|*.h)
             if ! samurai script format -t 4 -c "$input_folder/config.h" -e shift-jis -q "$input_path" "$output_path"; then
                 echo "Failed to format: $input_path; trying simple format" >&2
                 if ! samurai script format -t 4 -e shift-jis -s "$input_path" "$output_path"; then
