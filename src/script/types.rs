@@ -276,6 +276,7 @@ lazy_static! {
         "GetCharRange" => Signature::args(vec![EnumType::Character]),
         "GetEventProFlag" => Signature::args(vec![EnumType::Any]).returns(EnumType::EventProgress),
         "SetCharSayDeadFlag" => Signature::args(vec![EnumType::Character, EnumType::Boolean]),
+        "GetCharLife" => Signature::args(vec![EnumType::Character]),
         // callback functions
         "MapIn" => Signature::args(vec![EnumType::Map]),
         "MapOut" => Signature::args(vec![EnumType::Map]),
