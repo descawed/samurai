@@ -275,6 +275,7 @@ lazy_static! {
         "GetCharFriendFlag" => Signature::args(vec![EnumType::Character]).returns(EnumType::Friend),
         "GetCharRange" => Signature::args(vec![EnumType::Character]),
         "GetEventProFlag" => Signature::args(vec![EnumType::Any]).returns(EnumType::EventProgress),
+        "SetCharSayDeadFlag" => Signature::args(vec![EnumType::Character, EnumType::Boolean]),
         // callback functions
         "MapIn" => Signature::args(vec![EnumType::Map]),
         "MapOut" => Signature::args(vec![EnumType::Map]),
