@@ -305,7 +305,9 @@ fn unpack_volume<S: AsRef<str>>(
             }
         }
 
-        let output_path = extract_path.to_path_buf();
+        let mut output_path = extract_path.to_path_buf();
+        output_path.push(name.replace('\\', "/"));
+
         if let Some(parent) = output_path.parent() && !parent.exists() {
             fs::create_dir_all(parent)?;
         }
