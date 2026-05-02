@@ -95,6 +95,11 @@ fn unswizzle<T: Into<usize> + Copy>(
 ) -> Vec<usize> {
     let output_size = output_width * output_height;
     let mut out = vec![0usize; output_size];
+    // FIXME: this happens because we don't properly handle mixed-mode images
+    if output_size > input.len() {
+        eprintln!("Error: output size is larger than input size");
+        return out;
+    }
 
     let (page_width, page_height) = format.page_size();
     let (block_width, block_height) = format.block_size();
