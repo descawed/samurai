@@ -291,6 +291,7 @@ lazy_static! {
         "SetCharHoldObj" => Signature::args(vec![EnumType::Character, EnumType::Object]),
         "SetObjPos" => Signature::args(vec![EnumType::Object]),
         "GetObjRangeChar" => Signature::args(vec![EnumType::Object, EnumType::Character]),
+        "SetCharDead" => Signature::args(vec![EnumType::Character, EnumType::Boolean]),
         // callback functions
         "MapIn" => Signature::args(vec![EnumType::Map]),
         "MapOut" => Signature::args(vec![EnumType::Map]),
