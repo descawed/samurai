@@ -23,6 +23,11 @@ const PSMCT32_PAGE_WIDTH: usize = 64;
 const PSMCT32_PAGE_HEIGHT: usize = 32;
 /// Width of a PSMCT32 page in blocks
 const PSMCT32_PAGE_WIDTH_IN_BLOCKS: usize = PSMCT32_PAGE_WIDTH / PSMCT32_BLOCK_WIDTH;
+/// Number of blocks in a PSMCT32 page (= GS block count, same for any storage format).
+const PSMCT32_PAGE_BLOCKS: usize = 32;
+/// Size of a GS block in bytes. Texture base pointers (the offset that lets a second image share
+/// the previous image's data buffer) are expressed in these units.
+const GS_BLOCK_SIZE: usize = 256;
 
 const fn scale_alpha(alpha: u8) -> u8 {
     if alpha > 128 {
@@ -78,31 +83,41 @@ const fn psmt_map<const W: usize, const H: usize>(i: usize) -> usize {
 
 /// Unswizzle swizzled index data.
 ///
+/// `tex_packed_width` and `buf_packed_width` differ only for *mixed-mode* images, where a second
+/// texture is packed into the same byte buffer as a previous, wider one. In that case the texture's
+/// own buffer width drives output→VRAM-block addressing while the underlying buffer's width drives
+/// VRAM-block→file-byte addressing. For ordinary single-image files the two are equal and the
+/// formula reduces to a straight 2-D row-major decode.
+///
 /// # Arguments
 ///
 /// * `input` - The swizzled PSMCT32 data, decomposed into index-sized chunks
-/// * `input_width` - Width of the input buffer in PSMCT32 pixels
+/// * `tex_packed_width` - Width of *this* texture's logical buffer in PSMCT32 pixels (i.e. the
+///   value the GS would put in TEX0.TBW × 64 when reading the texture). Must be a multiple of
+///   `PSMCT32_PAGE_WIDTH`.
+/// * `buf_packed_width` - Width of the underlying (shared) byte buffer in PSMCT32 pixels — i.e. the
+///   width of the first descriptor's image block, since that's the layout the bytes were written
+///   in. For non-mixed-mode images, equal to `tex_packed_width`. Must be a multiple of
+///   `PSMCT32_PAGE_WIDTH`.
+/// * `tbp_blocks` - Texture base pointer in 256-byte GS blocks (0 for non-mixed-mode).
 /// * `output_width` - Width of the output image in pixels
 /// * `output_height` - Height of the output image in pixels
 /// * `format` - The pixel storage mode of the unswizzled data
 ///
 /// # Returns
 ///
-/// The unswizzled indexes.
+/// The unswizzled indexes. Indexes whose source position falls outside `input` are returned as 0.
 fn unswizzle<T: Into<usize> + Copy>(
     input: &[T],
-    input_width: usize,
+    tex_packed_width: usize,
+    buf_packed_width: usize,
+    tbp_blocks: usize,
     output_width: usize,
     output_height: usize,
     format: PixelStorageMode,
 ) -> Vec<usize> {
     let output_size = output_width * output_height;
     let mut out = vec![0usize; output_size];
-    // FIXME: this happens because we don't properly handle mixed-mode images
-    if output_size > input.len() {
-        eprintln!("Error: output size is larger than input size");
-        return out;
-    }
 
     let (page_width, page_height) = format.page_size();
     let (block_width, block_height) = format.block_size();
@@ -110,26 +125,47 @@ fn unswizzle<T: Into<usize> + Copy>(
     let pixels_per_word = format.num_pixels_per_word();
     let output_page_width_in_blocks = page_width / block_width;
     let block_transform = format.psmct32_block_transform();
-    let input_width_in_indexes = input_width * pixels_per_word;
+
+    let tex_pages_wide = tex_packed_width / PSMCT32_PAGE_WIDTH;
+    let buf_pages_wide = buf_packed_width / PSMCT32_PAGE_WIDTH;
+    let buf_width_in_indexes = buf_packed_width * pixels_per_word;
+
+    // PSMT4 packs two indexes per byte, so block-address arithmetic needs to be in indexes too.
+    let indexes_per_block = GS_BLOCK_SIZE * pixels_per_word / 4; // 4 = bytes per PSMCT32 word
+    let indexes_per_page_block = indexes_per_block; // 1 GS block = 1 swizzling block, regardless of format
+    // Above two lines are equal — kept separate for readability of the address computation below.
+    let _ = indexes_per_page_block;
 
     for (i, b) in out.iter_mut().enumerate() {
         let output_pixel_x = i % output_width;
         let output_pixel_y = i / output_width;
 
+        // 1. Compute this texture's logical page coords and linearize using the texture's own width.
         let page_x = output_pixel_x / page_width;
         let page_y = output_pixel_y / page_height;
+        let tex_page_index = page_y * tex_pages_wide + page_x;
 
-        // block coordinates and indexes are relative to the page
+        // 2. Within-page block, transformed from this format's layout into the linear PSMCT32-page
+        //    block layout used by the file format.
         let output_block_x = (output_pixel_x % page_width) / block_width;
         let output_block_y = (output_pixel_y % page_height) / block_height;
         let output_block_index = output_block_y * output_page_width_in_blocks + output_block_x;
-        let input_block_index = block_transform[output_block_index];
-        let input_block_x = input_block_index % PSMCT32_PAGE_WIDTH_IN_BLOCKS;
-        let input_block_y = input_block_index / PSMCT32_PAGE_WIDTH_IN_BLOCKS;
+        let in_page_block_index = block_transform[output_block_index];
 
-        // column index is relative to the block
+        // 3. Address the GS block in the shared buffer (TBP + texture's page contribution +
+        //    within-page block), then re-linearize that block address into a 2-D position within
+        //    the *underlying* buffer.
+        let block_addr = tbp_blocks + tex_page_index * PSMCT32_PAGE_BLOCKS + in_page_block_index;
+        let buf_page_index = block_addr / PSMCT32_PAGE_BLOCKS;
+        let buf_within_page_block = block_addr % PSMCT32_PAGE_BLOCKS;
+        let src_page_x = buf_page_index % buf_pages_wide;
+        let src_page_y = buf_page_index / buf_pages_wide;
+        let src_block_x = buf_within_page_block % PSMCT32_PAGE_WIDTH_IN_BLOCKS;
+        let src_block_y = buf_within_page_block / PSMCT32_PAGE_WIDTH_IN_BLOCKS;
+
+        // 4. Within-block, the format's own column layout determines which byte/nibble a pixel
+        //    reads from.
         let column_index = (output_pixel_y % block_height) / column_height;
-
         let output_pixel_x_in_column = output_pixel_x % column_width;
         let output_pixel_y_in_column = output_pixel_y % column_height;
         let output_pixel_index_in_column = output_pixel_y_in_column * column_width + output_pixel_x_in_column;
@@ -137,15 +173,20 @@ fn unswizzle<T: Into<usize> + Copy>(
         let input_pixel_x_in_column = input_pixel_index_in_column % (PSMCT32_COLUMN_WIDTH * pixels_per_word);
         let input_pixel_y_in_column = input_pixel_index_in_column / (PSMCT32_COLUMN_WIDTH * pixels_per_word);
 
-        // calculate input offset
+        // 5. Final flat index into the source data, addressed as a 2-D row-major buffer of the
+        //    underlying width.
         let input_pixel_index =
-            page_y * PSMCT32_PAGE_HEIGHT * input_width_in_indexes + page_x * PSMCT32_PAGE_WIDTH * pixels_per_word
-            + input_block_y * PSMCT32_BLOCK_HEIGHT * input_width_in_indexes + input_block_x * PSMCT32_BLOCK_WIDTH * pixels_per_word
-            + column_index * PSMCT32_COLUMN_HEIGHT * input_width_in_indexes
-            + input_pixel_y_in_column * input_width_in_indexes + input_pixel_x_in_column
+            src_page_y * PSMCT32_PAGE_HEIGHT * buf_width_in_indexes + src_page_x * PSMCT32_PAGE_WIDTH * pixels_per_word
+            + src_block_y * PSMCT32_BLOCK_HEIGHT * buf_width_in_indexes + src_block_x * PSMCT32_BLOCK_WIDTH * pixels_per_word
+            + column_index * PSMCT32_COLUMN_HEIGHT * buf_width_in_indexes
+            + input_pixel_y_in_column * buf_width_in_indexes + input_pixel_x_in_column
             ;
 
-        *b = input[input_pixel_index].into();
+        // For mixed-mode images the texture's nominal dimensions can extend past the end of the
+        // shared buffer; treat out-of-range reads as transparent (index 0) rather than erroring.
+        if let Some(value) = input.get(input_pixel_index) {
+            *b = (*value).into();
+        }
     }
 
     out
@@ -361,17 +402,17 @@ impl PixelStorageMode {
         }
     }
 
-    pub fn read_indexes(&self, data: &[u8], input_width: usize, output_width: usize, output_height: usize) -> Result<Vec<usize>> {
+    pub fn read_indexes(&self, data: &[u8], tex_packed_width: usize, buf_packed_width: usize, tbp_blocks: usize, output_width: usize, output_height: usize) -> Result<Vec<usize>> {
         match self {
             PixelStorageMode::PSMT8 | PixelStorageMode::PSMT8H => {
-                Ok(unswizzle(data, input_width, output_width, output_height, *self))
+                Ok(unswizzle(data, tex_packed_width, buf_packed_width, tbp_blocks, output_width, output_height, *self))
             }
             PixelStorageMode::PSMT4 => {
                 let indexes: Vec<_> = data
                     .iter()
                     .flat_map(|b| [(*b & 0xf) as usize, (*b >> 4) as usize])
                     .collect();
-                Ok(unswizzle(&indexes, input_width, output_width, output_height, *self))
+                Ok(unswizzle(&indexes, tex_packed_width, buf_packed_width, tbp_blocks, output_width, output_height, *self))
             }
             PixelStorageMode::PSMT4HL | PixelStorageMode::PSMT4HH => Ok(data
                 .iter()
@@ -397,8 +438,10 @@ struct ImageDescriptor {
     pub height_log2: u16,
     pub unknown0c: u16,
     pub unknown0e: u16,
-    pub packed_width: u16,  // PSMCT32 width
-    pub packed_height: u16, // PSMCT32 height
+    /// PSMCT32 width
+    pub packed_width: u16,
+    /// PSMCT32 height
+    pub packed_height: u16,
     pub image_block_length: u32,
     pub image_block_offset: u32,
     pub num_cluts: u16,
@@ -406,7 +449,8 @@ struct ImageDescriptor {
     pub clut_block_length: u32,
     pub clut_block_offset: u32,
     pub header_count: u16,
-    pub unknown2a: u16,
+    /// Texture base pointer in 256-byte GS blocks
+    pub tbp_blocks: u16,
     pub unknown2c: u32,
 }
 
@@ -480,16 +524,28 @@ pub struct PictureImage {
 }
 
 impl PictureImage {
-    fn decode(descriptor: ImageDescriptor, clut: &[u8], image: &[u8]) -> Validated<Self> {
+    fn decode(
+        descriptor: ImageDescriptor,
+        clut: &[u8],
+        image: &[u8],
+        buf_packed_width: usize,
+        tbp_blocks: usize,
+    ) -> Validated<Self> {
         let mut warnings = vec![];
 
-        let expected_image_block_length = descriptor.calc_image_block_length();
-        if image.len() < expected_image_block_length {
-            warnings.push(format!(
-                "Image buffer is too small; expected at least {} bytes, got {} bytes",
-                expected_image_block_length,
-                image.len()
-            ));
+        // For non-mixed-mode images, the image buffer should be at least as long as the declared
+        // image data. For mixed-mode (tbp_blocks > 0), the shared buffer may be shorter than the
+        // sum of the constituent images and out-of-range pixels are filled with index 0; skip the
+        // length check in that case.
+        if tbp_blocks == 0 {
+            let expected_image_block_length = descriptor.calc_image_block_length();
+            if image.len() < expected_image_block_length {
+                warnings.push(format!(
+                    "Image buffer is too small; expected at least {} bytes, got {} bytes",
+                    expected_image_block_length,
+                    image.len()
+                ));
+            }
         }
 
         let num_cluts = descriptor.num_cluts as usize;
@@ -531,6 +587,8 @@ impl PictureImage {
                 match descriptor.pixel_type.read_indexes(
                     image,
                     descriptor.packed_width(),
+                    buf_packed_width,
+                    tbp_blocks,
                     descriptor.pixel_width(),
                     descriptor.pixel_height(),
                 ) {
@@ -678,10 +736,26 @@ impl Readable for PictureImageFile {
         }
 
         let mut images = vec![];
+        // For mixed-mode files, a descriptor with both image_block_length and image_block_offset
+        // set to 0 reuses the previous descriptor's image bytes; its tbp_blocks field is the GS
+        // texture base pointer (in 256-byte blocks) within that shared buffer. The bytes were
+        // physically laid out using the previous descriptor's width, so we pass that as the buffer
+        // width to the unswizzler — the texture's own packed_width controls how the GS would have
+        // *read* the texture, while the buffer width controls where the bytes actually live.
+        let mut prev_image: Vec<u8> = vec![];
+        let mut prev_packed_width: usize = 0;
         for descriptor in descriptors {
-            let mut image = vec![0u8; descriptor.image_block_length as usize];
-            source.seek(SeekFrom::Start(descriptor.image_block_offset as u64))?;
-            source.read_exact(&mut image)?;
+            let (image, buf_packed_width, tbp_blocks) =
+                if descriptor.image_block_length == 0 && descriptor.image_block_offset == 0 {
+                    (prev_image, prev_packed_width, descriptor.tbp_blocks as usize)
+                } else {
+                    let mut image = vec![0u8; descriptor.image_block_length as usize];
+                    source.seek(SeekFrom::Start(descriptor.image_block_offset as u64))?;
+                    source.read_exact(&mut image)?;
+                    let pw = descriptor.packed_width();
+                    prev_packed_width = pw;
+                    (image, pw, 0)
+                };
 
             // recorded CLUT block length does not seem to be reliable
             let mut clut = vec![0u8; descriptor.calc_clut_block_length()];
@@ -690,7 +764,15 @@ impl Readable for PictureImageFile {
                 source.read_exact(&mut clut)?;
             }
 
-            images.push(PictureImage::decode(descriptor, &clut, &image));
+            images.push(PictureImage::decode(
+                descriptor,
+                &clut,
+                &image,
+                buf_packed_width,
+                tbp_blocks,
+            ));
+
+            prev_image = image;
         }
 
         let warnings = Validated::combine(&images);
