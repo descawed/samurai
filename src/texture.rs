@@ -52,6 +52,9 @@ fn interleave<T>(data: &mut [T], elem_size: usize) {
 ///
 /// All units are in indexes, regardless of the number of bits an index spans. For odd-numbered
 /// columns, flip bit value 4 in the input for correct results. The input must be in the range 0..W*H.
+///
+/// This implements the mapping described in section 8.6 Pixel Storage Format Conversion of the GS
+/// User's Manual.
 const fn psmt_map<const W: usize, const H: usize>(i: usize) -> usize {
     let row_size = W * H / PSMCT32_COLUMN_HEIGHT;
 
