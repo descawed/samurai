@@ -116,11 +116,33 @@ the path to the game's `script` directory, and an output directory where the for
     DoStuff #a;
   }
   ```
+  In fact, only the `/r` portion of the keyword is significant. The text following the `r` can be anything or nothing -
+  `/r`, `/return`, `/rfoo`, etc.
+
   Note that although built-in functions can return values, there is no syntax for a user-defined function to return a
   value. If you need to return a value, you'll have to store it in a global variable that the caller can check.
-- The language supports a `?I` keyword for ternary conditional expressions, `?W` for while loops, and `/break` to break
-  out of a loop. None of these are used in any real scripts, so I haven't taken the time to investigate how they work,
-  and the formatter doesn't support them.
+- While loops are introduced with the `?W` keyword, followed by a block containing a condition in parentheses, followed
+  by a comma, followed by a block containing the loop body:
+  ```
+  #iii : 75;
+  ?W { (#iii le 84) }, {
+    $AIDeleteCharacter #iii;
+    #iii add 1;
+  };
+  ```
+- Break out of a loop with `/break;`:
+  ```
+  ?W { ($#StrCount ge 0) }, {
+    ?i(($GetCharRange (#SeizonList at $#StrCount), 0, $#Dist) eq 1){
+      /break;
+    };
+    #StrCount sub 1;
+  };
+  ```
+  Like the `/return` keyword, only the `/b` portion of the keyword is significant.
+- The language supports a `?I` keyword for ternary conditional expressions: `?I #condition, #true_value, #false_value`.
+  No scripts have been observed to use this syntax, but the built-in `not` function is internally defined as a macro
+  which expands to `?I (#condition), 0, 1`.
 - Object attributes are defined via the `@` operator. The left-hand side of the operator is the object to add the
   attributes to and the right-hand side is a block `{}`. This is a normal code block that can contain any arbitrary
   statements, but any variables defined in this block become attributes/methods of the object:
