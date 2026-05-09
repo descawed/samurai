@@ -1,7 +1,6 @@
 # samurai
 
-Tools for working with the files of the game (Way of the) Samurai (2002). These have currently only been tested on the
-original Japanese release.
+Tools for working with the files of the game (Way of the) Samurai (2002).
 
 ## Usage
 
@@ -9,6 +8,7 @@ Build with `cargo build`. All the tools are contained in a single binary called 
 currently provided; use the `help` subcommand or `-h`/`--help` option for details.
 
 - `samurai volume` - List, unpack, or pack volume.dat.
+- `samurai module` - Unpack or pack MODULE.BIN (not present in the original Japanese release).
 - `samurai texture` - List information about game textures and convert them to other formats.
 - `samurai script` - Convert and format script files for easier reading. Can also (loosely) reverse the process when
   you're ready to store them back in volume.dat.

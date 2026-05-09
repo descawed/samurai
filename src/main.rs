@@ -5,6 +5,7 @@ use anyhow::Result;
 use clap::{arg, Command};
 
 use samurai::cli::*;
+use samurai::module::DEFAULT_ALIGNMENT;
 use samurai::texture::StackDirection;
 use samurai::volume::DEFAULT_MAX_OBJECTS;
 
@@ -185,12 +186,63 @@ fn cli() -> Command {
                         )
                 )
         )
+        .subcommand(
+            Command::new("module")
+                .about("Pack or unpack MODULE.BIN")
+                .subcommand_required(true)
+                .subcommand(
+                    Command::new("unpack")
+                        .about("Unpack the contents of MODULE.BIN")
+                        .arg(arg!(<ARCHIVE> "Path to MODULE.BIN archive").value_parser(clap::value_parser!(PathBuf)))
+                        .arg(arg!(<OUTPUT> "Path to a directory where the MODULE.BIN will be extracted").value_parser(clap::value_parser!(PathBuf))),
+                )
+                .subcommand(
+                    Command::new("pack")
+                        .about("Pack one or more modules into a MODULE.BIN archive")
+                        .arg(
+                            arg!(-a --alignment "Byte alignment of the modules in the archive. Should be a power of 2.")
+                                .value_parser(clap::value_parser!(u32))
+                        )
+                        .arg(arg!(<ARCHIVE> "Path to MODULE.BIN archive to be created").value_parser(clap::value_parser!(PathBuf)))
+                        .arg(arg!(<INPUT> ... "One or more input modules to pack").value_parser(clap::value_parser!(PathBuf))),
+                )
+        )
 }
 
 fn main() -> Result<()> {
     let matches = cli().get_matches();
 
     match matches.subcommand() {
+        Some(("module", sub_matches)) => match sub_matches.subcommand() {
+            Some(("unpack", unpack_matches)) => {
+                let archive_path = unpack_matches
+                    .get_one::<PathBuf>("ARCHIVE")
+                    .expect("Path to MODULE.BIN archive is required");
+                
+                let extract_path = unpack_matches
+                    .get_one::<PathBuf>("OUTPUT")
+                    .expect("Path to extraction directory is required");
+                
+                unpack_modules(archive_path, extract_path)?;
+            }
+            Some(("pack", pack_matches)) => {
+                let alignment = pack_matches
+                    .get_one::<u32>("alignment")
+                    .copied()
+                    .unwrap_or(DEFAULT_ALIGNMENT);
+                
+                let archive_path = pack_matches
+                    .get_one::<PathBuf>("ARCHIVE")
+                    .expect("Path to MODULE.BIN archive is required");
+                
+                let input_paths = pack_matches
+                    .get_many::<PathBuf>("INPUT")
+                    .expect("At least one input module is required");
+                
+                pack_modules(archive_path, alignment, input_paths)?;
+            }
+            _ => unreachable!(),
+        },
         Some(("volume", sub_matches)) => match sub_matches.subcommand() {
             Some(("list", list_matches)) => {
                 let volume_path = list_matches
