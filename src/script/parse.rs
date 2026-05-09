@@ -307,9 +307,11 @@ pub(super) enum Statement {
     ObjectInitialization(Expression, Block),
     Conditional(Conditional, Option<Block>), // conditional with an optional else block
     Expression(Expression),
+    WhileLoop(Expression, Block),
     Return,
+    Break,
     Empty,
-    // TODO: loops, breaks, ternary
+    // TODO: ternary
 }
 
 impl Display for Statement {
@@ -326,7 +328,11 @@ impl Display for Statement {
                 }
             }
             Self::Expression(expr) => expr.fmt(f)?,
+            Self::WhileLoop(expr, block) => {
+                write!(f, "?W {{ ({}) }}, {}", expr, block)?;
+            }
             Self::Return => write!(f, "/return")?,
+            Self::Break => write!(f, "/break")?,
             Self::Empty => {}
         }
 
@@ -515,15 +521,32 @@ pub(super) fn parser<'src>(
         let object_init = expr
             .clone()
             .then_ignore(just('@'))
-            .then(block)
+            .then(block.clone())
             .then_ignore(semicolon.or_not())
             .map(|(e, b)| Statement::ObjectInitialization(e, b.into()));
 
-        let return_stmt = just("/return")
+        let while_loop = just("?W")
+            .ignore_then(just('{').padded())
+            .ignore_then(expr.clone())
+            .then_ignore(just('}').padded())
+            .then_ignore(just(',').padded())
+            .then(block)
+            .then_ignore(semicolon.or_not())
+            .map(|(e, b)| Statement::WhileLoop(e, b.into()));
+
+        let return_stmt = just("/r")
+            .then_ignore(text::ident().or_not())
             .padded()
             // the last statement in a block doesn't have to have a semicolon
             .then_ignore(semicolon.or(just('}').padded().rewind()))
             .to(Statement::Return);
+
+        let break_stmt = just("/b")
+            .then_ignore(text::ident().or_not())
+            .padded()
+            // the last statement in a block doesn't have to have a semicolon
+            .then_ignore(semicolon.or(just('}').padded().rewind()))
+            .to(Statement::Break);
 
         let stmt_expr = expr
             .then_ignore(semicolon.or(just('}').padded().rewind()))
@@ -531,7 +554,13 @@ pub(super) fn parser<'src>(
 
         let empty_stmt = semicolon.to(Statement::Empty);
 
-        conditional.or(return_stmt).or(object_init).or(stmt_expr).or(empty_stmt)
+        conditional
+            .or(return_stmt)
+            .or(break_stmt)
+            .or(object_init)
+            .or(while_loop)
+            .or(stmt_expr)
+            .or(empty_stmt)
     });
 
     stmt.repeated()
@@ -1123,5 +1152,40 @@ mod tests {
         assert_eq!(args.len(), 1);
         let mut it = args.into_iter();
         assert!(matches!(it.next().unwrap(), Expression::Int(11)));
+    }
+
+    #[test]
+    fn test_while_loop() {
+        let parser = parser();
+        let mut result = parser.parse(
+            "\
+    ?W{
+        (#iii le 84)},{
+        $AIDeleteCharacter #iii;
+        #iii add 1;
+    };
+            "
+        ).unwrap().into_iter();
+        let stmt = result.next().unwrap();
+        assert!(matches!(stmt, Statement::WhileLoop(_, _)));
+        assert!(matches!(result.next(), None));
+    }
+
+    #[test]
+    fn test_short_break() {
+        let stmt = one_statement("/b;");
+        assert!(matches!(stmt, Statement::Break));
+    }
+
+    #[test]
+    fn test_long_break() {
+        let stmt = one_statement("/break;");
+        assert!(matches!(stmt, Statement::Break));
+    }
+
+    #[test]
+    fn test_short_return() {
+        let stmt = one_statement("/r;");
+        assert!(matches!(stmt, Statement::Return));
     }
 }
