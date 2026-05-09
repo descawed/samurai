@@ -4,10 +4,10 @@ use std::fmt::{Display, Formatter};
 use std::ops::Deref;
 use std::rc::{Rc, Weak};
 use std::str::FromStr;
+use std::sync::LazyLock;
 
 use anyhow::{anyhow, Error};
 use common_macros::hash_map;
-use lazy_static::lazy_static;
 use strum::{EnumIter, EnumString};
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash, EnumString, EnumIter, Default)]
@@ -187,8 +187,8 @@ impl From<String> for Variable {
     }
 }
 
-lazy_static! {
-    static ref SIGNATURES: HashMap<&'static str, Signature> = hash_map! {
+static SIGNATURES: LazyLock<HashMap<&'static str, Signature>> = LazyLock::new(|| {
+    hash_map! {
         "DelAIChar" => Signature::args(vec![EnumType::Character]),
         "SetAIChar" => Signature::args(vec![EnumType::Character, EnumType::Ai]),
         "GetAIChar" => Signature::args(vec![EnumType::Character]),
@@ -311,8 +311,8 @@ lazy_static! {
         "Dead" => Signature::args(vec![EnumType::Character, EnumType::Character]),
         "Watch" => Signature::args(vec![EnumType::Character, EnumType::Character]),
         "AIStatus" => Signature::args(vec![EnumType::Character, EnumType::Ai]),
-    };
-}
+    }
+});
 
 #[derive(Debug, Default, PartialEq, Eq, Clone)]
 pub(super) struct Signature {
