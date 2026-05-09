@@ -328,6 +328,11 @@ impl Analyzer {
                     }
                     self.infer_block(init_block);
                 }
+                Statement::WhileLoop(expr, loop_block) => {
+                    self.infer_expression(expr, Rc::clone(&block_scope));
+                    loop_block.ensure_scope(Rc::clone(&block_scope));
+                    self.infer_block(loop_block);
+                }
                 Statement::Conditional(conditional, else_block) => {
                     let mut condition = Some(conditional);
                     while let Some(Conditional(expr, condition_block, next_condition)) = condition {
