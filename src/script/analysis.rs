@@ -379,6 +379,21 @@ fn get_expression_type(scope: &SharedScope, expr: &Expression) -> Option<ScriptV
         Expression::FunctionDefinition(args, _) => Some(ScriptValue::Function(Rc::new(
             RefCell::new(Signature::args(vec![EnumType::default(); args.len()])),
         ))),
+        Expression::TernaryConditional(_, true_expr, false_expr) => {
+            let true_type = get_expression_type(scope, true_expr);
+            let false_type = get_expression_type(scope, false_expr);
+            match (true_type, false_type) {
+                (Some(true_type), None) => Some(true_type),
+                (None, Some(false_type)) => Some(false_type),
+                // the complexity of trying to handle function or object-typed values here is
+                // not worth it considering there aren't even any known instances of ternaries in
+                // real game scripts
+                (Some(ScriptValue::Scalar(true_type)), Some(ScriptValue::Scalar(false_type))) => {
+                    Some(ScriptValue::Scalar(true_type.choose(false_type)))
+                }
+                _ => None,
+            }
+        }
         Expression::Int(_) => Some(ScriptValue::Scalar(EnumType::Any)),
         _ => None,
     }

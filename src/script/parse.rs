@@ -111,6 +111,7 @@ pub(super) enum Expression {
     FunctionCall(String, Vec<Expression>),
     MethodCall(Box<Expression>, String, Vec<Expression>),
     FunctionDefinition(Vec<String>, Block),
+    TernaryConditional(Box<Expression>, Box<Expression>, Box<Expression>),
     Variable(Variable),
     String(String),
     Int(i32),
@@ -181,6 +182,14 @@ impl Expression {
                     f(arg);
                     arg.walk_mut(f);
                 }
+            }
+            Expression::TernaryConditional(cond, if_true, if_false) => {
+                f(cond);
+                cond.walk_mut(f);
+                f(if_true);
+                if_true.walk_mut(f);
+                f(if_false);
+                if_false.walk_mut(f);
             }
             Expression::Global(e) => {
                 f(e);
@@ -279,6 +288,14 @@ impl Display for Expression {
 
                 write!(f, " {}", body)
             }
+            Self::TernaryConditional(cond, if_true, if_false) => {
+                write!(f, "?I ")?;
+                cond.write_safe(f)?;
+                write!(f, ", ")?;
+                if_true.write_safe(f)?;
+                write!(f, ", ")?;
+                if_false.write_safe(f)
+            }
             Self::Variable(v) => v.fmt(f),
             Self::String(s) => write!(f, "\"{}\"", s),
             Self::Int(i) => i.fmt(f),
@@ -311,7 +328,6 @@ pub(super) enum Statement {
     Return,
     Break,
     Empty,
-    // TODO: ternary
 }
 
 impl Display for Statement {
@@ -454,6 +470,15 @@ pub(super) fn parser<'src>(
                 .then(expr.clone())
                 .map(|(l, r)| Expression::ValueDeclaration(Box::new(l), Box::new(r)));
 
+            let ternary = just("?I")
+                .padded()
+                .ignore_then(expr.clone())
+                .then_ignore(just(',').padded())
+                .then(expr.clone())
+                .then_ignore(just(',').padded())
+                .then(expr.clone())
+                .map(|((c, t), f)| Expression::TernaryConditional(Box::new(c), Box::new(t), Box::new(f)));
+
             // a small number of scripts have function definitions that are lacking the ?F keyword,
             // and some have only a ? with no F. I don't know if this even works as intended
             // in-game, but for compatibility purposes, we'll parse it.
@@ -494,6 +519,7 @@ pub(super) fn parser<'src>(
                 .or(val_decl)
                 .or(global)
                 .or(function)
+                .or(ternary)
                 .or(method)
                 .or(atom)
                 .or(expr.delimited_by(just('('), just(')')))
@@ -1187,5 +1213,11 @@ mod tests {
     fn test_short_return() {
         let stmt = one_statement("/r;");
         assert!(matches!(stmt, Statement::Return));
+    }
+
+    #[test]
+    fn test_ternary() {
+        let stmt = one_statement("?I (#a eq #b), 1, 0;");
+        assert!(matches!(stmt, Statement::Expression(Expression::TernaryConditional(_, _, _))));
     }
 }
