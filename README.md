@@ -39,7 +39,7 @@ the path to the game's `script` directory, and an output directory where the for
 - Text enclosed in double quotes forms a string literal: `"abcd"`. The escape sequence `\n` is supported to indicate
   a newline. I'm not sure if it's possible to escape quotes as I haven't seen any examples of strings that include a
   quote character.
-- There is no comment syntax that I'm aware of.
+- Comments start with `//` and extend to the end of the line. The script formatter does not currently support comments.
 - Variables generally start with `#` (`#MyVariable`) while function names are generally bare identifiers (`MyFunc`).
   This is not a hard requirement, though – variables may omit the `#` prefix and functions may include it.
 - Both variable and function names may be prefixed with `$` to search for or define them in the global scope:

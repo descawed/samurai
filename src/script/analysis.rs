@@ -5,6 +5,7 @@ use std::rc::Rc;
 use super::parse::{Block, Conditional, Expression, Statement};
 use super::types::{
     EnumType, Scope, ScopeExt, ScriptValue, SharedScope, SharedSignature, Signature, Variable,
+    obfuscate, deobfuscate,
 };
 
 const MAX_ITERATIONS: usize = 10;
@@ -102,11 +103,11 @@ impl Analyzer {
     fn infer_call_types(
         &mut self,
         signature: SharedSignature,
-        args: &[Expression],
+        args: &mut [Expression],
         scope: SharedScope,
     ) {
         let mut select = None;
-        for (arg_expr, arg_type) in args.iter().zip(signature.borrow().iter()) {
+        for (arg_expr, arg_type) in args.iter_mut().zip(signature.borrow().iter()) {
             if let ((&Expression::Int(value), _), EnumType::Select) =
                 (arg_expr.unwrap_global(), arg_type)
             {
@@ -115,12 +116,13 @@ impl Analyzer {
             }
 
             let final_arg_type = arg_type.select_type(select);
-            let (inner_expr, is_global) = arg_expr.unwrap_global();
+            let (inner_expr, is_global) = arg_expr.unwrap_global_mut();
             match inner_expr {
                 Expression::Variable(var) => {
                     self.update(&scope, var, is_global, ScriptValue::Scalar(final_arg_type))
                 }
                 Expression::FunctionCall(name, args) => {
+                    deobfuscate(name);
                     let name_var = name.as_str().into();
                     // I've seen a few instances of variables (specifically function arguments) being
                     // referenced without a hash, which causes them to be parsed as function calls, so
@@ -216,6 +218,8 @@ impl Analyzer {
                 }
             }
             Expression::FunctionCall(name, args) => {
+                deobfuscate(name);
+
                 // this block is necessary to ensure the borrow is dropped promptly
                 let result = {
                     scope
@@ -232,8 +236,13 @@ impl Analyzer {
 
         // continue down the AST
         if let Some((lhs, Expression::FunctionDefinition(args, block))) = expr.declaration_mut() {
-            let (lhs_expr, is_global) = lhs.unwrap_global();
+            let (lhs_expr, is_global) = lhs.unwrap_global_mut();
             if let Expression::Variable(var) = lhs_expr {
+                if let Variable(var_name, None) = var {
+                    // this may be a global event callback declaration; attempt to deobfuscate
+                    deobfuscate(var_name);
+                }
+                
                 let mut func_scope = block.ensure_scope(Rc::clone(&scope));
                 let function_sig = match scope.borrow().lookup_function(var, is_global) {
                     Some(callback_sig) => {
