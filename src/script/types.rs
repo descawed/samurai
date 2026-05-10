@@ -468,6 +468,7 @@ static SIGNATURES: LazyLock<HashMap<&'static str, Signature>> = LazyLock::new(||
         "SetAddCharScript" => Signature::args(vec![EnumType::Character]),
         "SetCharNoCollMode" => Signature::args(vec![EnumType::Character, EnumType::Boolean]),
         "SetAIGroupRelation" => Signature::args(vec![EnumType::Footing, EnumType::Footing, EnumType::Relation]),
+        "GetAIGroupRelation" => Signature::args(vec![EnumType::Footing, EnumType::Footing]).returns(EnumType::Relation),
         "SendFunc" => Signature::args(vec![EnumType::Select, EnumType::SendFuncCharacter]),
         "SendFunc2" => Signature::args(vec![EnumType::Select, EnumType::SendFuncCharacter]),
         "SetAddCharScriptList" => Signature::args(vec![EnumType::Any]).vararg(EnumType::Character),

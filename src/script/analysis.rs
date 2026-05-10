@@ -5,7 +5,7 @@ use std::rc::Rc;
 use super::parse::{Block, Conditional, Expression, Statement};
 use super::types::{
     EnumType, Scope, ScopeExt, ScriptValue, SharedScope, SharedSignature, Signature, Variable,
-    obfuscate, deobfuscate,
+    deobfuscate,
 };
 
 const MAX_ITERATIONS: usize = 10;
@@ -242,7 +242,7 @@ impl Analyzer {
                     // this may be a global event callback declaration; attempt to deobfuscate
                     deobfuscate(var_name);
                 }
-                
+
                 let mut func_scope = block.ensure_scope(Rc::clone(&scope));
                 let function_sig = match scope.borrow().lookup_function(var, is_global) {
                     Some(callback_sig) => {
