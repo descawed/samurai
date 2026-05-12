@@ -466,6 +466,7 @@ pub(super) fn parser<'src>(
                 .map(|(l, r)| Expression::ReferenceDeclaration(Box::new(l), Box::new(r)));
 
             let val_decl = any_var
+                .clone()
                 .then_ignore(just(':'))
                 .then(expr.clone())
                 .map(|(l, r)| Expression::ValueDeclaration(Box::new(l), Box::new(r)));
@@ -514,6 +515,14 @@ pub(super) fn parser<'src>(
                 .ignore_then(expr.clone())
                 .map(|e| Expression::Global(Box::new(e)));
 
+            // if there's a syntax error in a declaration or method call, chumsky will back up and
+            // look for an alternative valid parse. since a lone atom is a valid expression, that
+            // parse will succeed, and the parser will then error on the subsequent assignment
+            // operator or method name, obscuring the true source of the error. to prevent that,
+            // we only allow parsing an atom if it's not part of a declaration or method call.
+            let decl_or_method = any_var
+                .then_ignore(text::ident().or(one_of("=<>|:").to_slice()).padded());
+
             func_def
                 .or(ref_decl)
                 .or(val_decl)
@@ -521,7 +530,7 @@ pub(super) fn parser<'src>(
                 .or(function)
                 .or(ternary)
                 .or(method)
-                .or(atom)
+                .or(atom.and_is(decl_or_method.not()))
                 .or(expr.delimited_by(just('('), just(')')))
                 .padded()
         });
@@ -1219,5 +1228,14 @@ mod tests {
     fn test_ternary() {
         let stmt = one_statement("?I (#a eq #b), 1, 0;");
         assert!(matches!(stmt, Statement::Expression(Expression::TernaryConditional(_, _, _))));
+    }
+
+    #[test]
+    fn test_global_method_call() {
+        let stmt = one_statement("$#NandemoGroupRand=random 10;");
+        let Statement::Expression(Expression::Global(value)) = stmt else {
+            panic!("Statement was not a global");
+        };
+        assert!(matches!(*value, Expression::MethodCall(_, _, _)));
     }
 }
