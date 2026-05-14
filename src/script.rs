@@ -185,7 +185,7 @@ impl ScriptFormatter {
                 0 => config.get(&(EnumType::Null, 0)),
                 _ => None,
             })
-            .map(|s| Expression::new_global_var(s.clone()))
+            .map(|s| Expression::new_var(s.clone()))
     }
 
     fn use_constant(&mut self, value_type: EnumType, expr: &mut Expression, select: Option<i32>) {

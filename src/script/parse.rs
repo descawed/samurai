@@ -120,8 +120,8 @@ pub(super) enum Expression {
 }
 
 impl Expression {
-    pub fn new_global_var(name: String) -> Self {
-        Self::Global(Box::new(Self::Variable(Variable(name, None))))
+    pub fn new_var(name: String) -> Self {
+        Self::Variable(Variable(name, None))
     }
 
     pub fn into_declaration(self) -> Option<(Self, Self)> {
