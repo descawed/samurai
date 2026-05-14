@@ -22,8 +22,9 @@ while IFS= read -r -d '' input_path; do
     mkdir -p "$(dirname "$output_path")"
 
     case $(basename "$input_path") in
-        config.h)
-            # don't use advanced formatting for config.h; it causes recursive variable definitions
+        config.h|assign.h|scriptmessage.h)
+            # using advanced formatting for config.h causes recursive variable definitions, and assign.h and
+            # scriptmessage.h are not regular scripts and contain syntax errors
             if ! samurai script format -t 4 -e shift-jis -s "$input_path" "$output_path"; then
               echo "Failed to format: $input_path" >&2
             fi
