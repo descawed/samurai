@@ -3,6 +3,7 @@
   "name": "Samurai Script",
   "scopeName": "source.samurai-script",
   "patterns": [
+    { "include": "#comments" },
     { "include": "#strings" },
     { "include": "#numbers" },
     { "include": "#function-definition" },
@@ -17,6 +18,10 @@
     { "include": "#punctuation" }
   ],
   "repository": {
+    "comments": {
+      "name": "comment.line.double-slash.samurai-script",
+      "match": "//.*$"
+    },
     "strings": {
       "name": "string.quoted.double.samurai-script",
       "begin": "\"",
