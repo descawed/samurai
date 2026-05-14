@@ -280,7 +280,7 @@ static FUNCTION_OBFUSCATION_MAP: LazyLock<HashMap<&'static str, &'static str>> =
         "C33" => "SetCharExplosion",
         "C34" => "SetCharPosFixMode",
         "C35" => "SetCharHiFaceMode",
-        //"C36" => "???",
+        "C36" => "SetCharWeapon",
         "C37" => "SetBattleCamera",
         "C38" => "SetCameraPos",
         "C39" => "SetBustupCamera",
@@ -379,7 +379,7 @@ static FUNCTION_OBFUSCATION_MAP: LazyLock<HashMap<&'static str, &'static str>> =
         "C96" => "ReportWeapon",
         "C97" => "EventEndWait",
         "C98" => "GameStopWait",
-        //"C99" => "???",
+        "C99" => "SetMapOutEnd",
         // function C9A is not defined in any known game version
         "C9B" => "PrintFunc",
         "C9C" => "SetAIChar",
@@ -415,10 +415,8 @@ static FUNCTION_OBFUSCATION_MAP: LazyLock<HashMap<&'static str, &'static str>> =
         "CBB" => "SetObjStop",
         "CBC" => "SetObjTaihouAction",
         "CBD" => "SetObjTaihouStop",
-        // these functions do not exist in unobfuscated versions of the game, so I've chosen names
-        // for them based on their observed behavior
-        "CBE" => "SetMapOutFlag",
-        "CBF" => "GetMapOutFlag",
+        "CBE" => "SetNoMapOutFlag",
+        "CBF" => "GetNoMapOutFlag",
     }
 });
 
@@ -537,6 +535,7 @@ static SIGNATURES: LazyLock<HashMap<&'static str, Signature>> = LazyLock::new(||
         "SetObjPos" => Signature::args(vec![EnumType::Object]),
         "GetObjRangeChar" => Signature::args(vec![EnumType::Object, EnumType::Character]),
         "SetCharDead" => Signature::args(vec![EnumType::Character, EnumType::Boolean]),
+        "SetCharWeapon" => Signature::args(vec![EnumType::Character]),
         // callback functions
         "MapIn" => Signature::args(vec![EnumType::Map]),
         "MapOut" => Signature::args(vec![EnumType::Map]),
