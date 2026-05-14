@@ -353,16 +353,6 @@ impl ScriptFormatter {
             let mut analyzer = Analyzer::new();
             analyzer.infer_types(&mut block, self.config.as_ref());
             self.process_block(&mut block);
-            if self.made_changes {
-                // if we actually made changes, insert an include of config.h at the beginning of the script
-                block.insert(
-                    0,
-                    Statement::Expression(Expression::Global(Box::new(Expression::FunctionCall(
-                        String::from("Include"),
-                        vec![Expression::String(String::from("config.h"))],
-                    )))),
-                );
-            }
         }
         let text = block.to_string_top_level();
         Ok(match tab_width {
