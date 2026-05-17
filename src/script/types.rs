@@ -403,6 +403,7 @@ static FUNCTION_OBFUSCATION_MAP: LazyLock<HashMap<&'static str, &'static str>> =
         "CAE" => "SetTalkSelect",
         "CAF" => "SayGroup",
         "CB0" => "SetSayPos",
+        "CB1" => "SetMapOutSelect",
         "CB2" => "GetObjChar",
         "CB3" => "SetObjPos",
         "CB4" => "AddObjPos",
