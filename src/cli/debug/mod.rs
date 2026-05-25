@@ -3,6 +3,7 @@ use std::fmt::Display;
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
+use crossterm::{execute, terminal::SetTitle};
 use ratatui::crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
@@ -315,6 +316,8 @@ fn labeled_constant<I: Display>(value: I, name: Option<&str>) -> String {
 }
 
 pub fn run_debugger() -> Result<()> {
+    execute!(std::io::stdout(), SetTitle("Way of the Samurai debugger"))?;
+
     let mut app = DebuggerApp::new();
     ratatui::run(|term| app.run(term))?;
     Ok(())
