@@ -12,6 +12,7 @@ currently provided; use the `help` subcommand or `-h`/`--help` option for detail
 - `samurai texture` - List information about game textures and convert them to other formats.
 - `samurai script` - Convert and format script files for easier reading. Can also (loosely) reverse the process when
   you're ready to store them back in volume.dat.
+- `samurai debug` - Debug the game running in PCSX2.
 
 ## Scripts
 
@@ -200,3 +201,39 @@ Then the script can create "instances" of this class by making copies of the cla
 #FlagShire : #ClassFLAG;
 #FlagShire SET $#CHID_SHIRETOKO;
 ```
+
+## Debugger
+
+The debugger allows monitoring the game internals while it runs in PCSX2. It's currently limited to support for the
+following:
+
+- Japanese game versions (SLPS-20178 and SLPM-74405)
+- Linux only
+- Read-only
+
+The `debug` command has no options; it will automatically wait for and attach to a PCSX2 process. Once attached, the
+display updates every 3 seconds. Press `q` to exit. The debugger provides a TUI with three sections: Globals,
+Characters, and Flags. Use tab to switch between them.
+
+### Globals
+
+The Globals panel displays various global game state variables that may be of interest.
+
+### Characters
+
+The Characters panel displays a list of all characters loaded in the current scene. Each character displays a summary
+line with their ID, name, and HP. Select a character with the arrow keys and press enter to toggle a detail view with
+additional information.
+
+### Flags
+
+The Flags panel displays global flags and variables that scripts use to track progression and event state. There are
+four tabs corresponding to the four flag/variable types:
+
+- **Man** - event manager flags; corresponds to script functions `SetEventManFlag` and `GetEventManFlag`
+- **Pro** - event progress flags; corresponds to `SetEventProFlag` and `GetEventProFlag`
+- **Int**- integer variables; corresponds to `SetVarInt` and `GetVarInt`
+- **Act** - event act end flags; corresponds to `SetEventActEndFlag` and `GetEventActEndFlag`
+
+Use the left and right arrow keys to switch between tabs and the up and down arrow keys to scroll through the flags.
+Flags whose value is 0 (the default value) are grayed out to make flags that have been set stand out.
