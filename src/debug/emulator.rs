@@ -4,7 +4,7 @@ use std::io::{BufRead, BufReader, Cursor, ErrorKind};
 use std::ops::Deref;
 use std::os::unix::fs::FileExt;
 
-use binrw::{BinRead, BinReaderExt, BinWrite, BinWriterExt};
+use binrw::{BinRead, BinReaderExt, BinWrite};
 use object::{Object, ObjectSymbol};
 use sysinfo::{Pid, Process};
 
