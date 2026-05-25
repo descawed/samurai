@@ -252,23 +252,23 @@ impl Character {
     pub const fn is_invincible(&self) -> bool {
         self.flags & 0x4 != 0
     }
-    
+
     pub const fn is_pos_fix_mode(&self) -> bool {
         self.flags & 0x20 != 0
     }
-    
+
     pub const fn is_stopped(&self) -> bool {
         self.flags2 & 0x2 != 0
     }
-    
+
     pub const fn has_target_character(&self) -> bool {
         self.flags2 & 0x400 != 0
     }
-    
+
     pub const fn is_dead(&self) -> bool {
         self.flags2 & 0x40000 != 0
     }
-    
+
     pub const fn is_hi_face_mode(&self) -> bool {
         self.flags2 & 0x4000000 != 0
     }
@@ -276,15 +276,15 @@ impl Character {
     pub const fn is_watch_enabled(&self) -> bool {
         self.flags3 & 0x20 != 0
     }
-    
+
     pub const fn say_dead_flag(&self) -> bool {
         self.say_dead_flag != 0
     }
-    
+
     pub const fn is_drop_watch(&self) -> bool {
         self.is_drop_watch != 0
     }
-    
+
     /// For each `EVENT_` mode, returns its name and whether the corresponding bit is set in
     /// `event_modes`. Entries are ordered by the constants' values.
     pub fn event_mode_flags(&self) -> [(&'static str, bool); 15] {

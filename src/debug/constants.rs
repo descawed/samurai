@@ -217,9 +217,9 @@ impl From<i8> for Time {
 #[binrw]
 #[derive(Debug, Clone, Copy, Ord, PartialOrd, Eq, PartialEq, Hash, Zeroable)]
 #[repr(transparent)]
-pub struct AiStatus(i32);
+pub struct AiStatus(u32);
 
-impl GameConstant<i32, 16> for AiStatus {
+impl GameConstant<u32, 16> for AiStatus {
     fn all_values() -> [Self; 16] {
         [
             Self(0),
@@ -241,15 +241,13 @@ impl GameConstant<i32, 16> for AiStatus {
         ]
     }
 
-    fn value(&self) -> i32 {
+    fn value(&self) -> u32 {
         self.0
     }
 
     fn constant_name(&self) -> Option<&'static str> {
-        // there appear to be some flags set in the high bits. I'm not sure if AI_DEFENCE and AI_ESCORT
-        // are flags too - they look like it, but I have seen scripts set AI_DEFENCE directly. for now,
-        // I'll just mask out the bits that I know are flags.
-        let ai_status = self.0 & 0x7f00ffff;
+        // some flag bit; it's masked out by GetAIChar as well
+        let ai_status = self.0 & 0xff7fffff;
         Some(match ai_status {
             0 => "AI_BATTLE",
             1 => "AI_NONCOM_IDLE",
@@ -272,8 +270,8 @@ impl GameConstant<i32, 16> for AiStatus {
     }
 }
 
-impl From<i32> for AiStatus {
-    fn from(value: i32) -> Self {
+impl From<u32> for AiStatus {
+    fn from(value: u32) -> Self {
         Self(value)
     }
 }
