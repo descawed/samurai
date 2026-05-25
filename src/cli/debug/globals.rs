@@ -11,7 +11,7 @@ use super::{labeled_constant, panel_block};
 /// Builds one `label: value` row.
 fn row<'a>(label: &'static str, value: String) -> Line<'a> {
     Line::from(vec![
-        Span::styled(format!("{label}: "), Style::new().add_modifier(Modifier::BOLD)),
+        Span::styled(format!("{label:>10}: "), Style::new().add_modifier(Modifier::BOLD)),
         Span::raw(value),
     ])
 }
@@ -19,26 +19,26 @@ fn row<'a>(label: &'static str, value: String) -> Line<'a> {
 fn build_lines(game: &Game) -> Vec<Line<'static>> {
     let state = &game.game_state;
     vec![
-        row("   Version", game.version_name().to_string()),
+        row("Version", game.version_name().to_string()),
         row(
             "Difficulty",
             format!("{} ({})", state.difficulty.value(), state.difficulty.display_name()),
         ),
-        row("     Phase", state.phase_id.to_string()),
-        row("     Event", state.event_id.to_string()),
-        row("       Map", labeled_constant(state.map_id.value(), state.map_id.constant_name())),
-        row("      Exit", state.exit_id.to_string()),
+        row("Phase", state.phase_id.to_string()),
+        row("Event", state.event_id.to_string()),
+        row("Map", labeled_constant(state.map_id.value(), state.map_id.constant_name())),
+        row("Exit", state.exit_id.to_string()),
         row(
-            "  Map Time",
+            "Map Time",
             labeled_constant(state.map_time_id.value(), state.map_time_id.constant_name()),
         ),
         row(
-            "   Footing",
+            "Footing",
             labeled_constant(state.player_footing.value(), state.player_footing.constant_name()),
         ),
-        row("     Money", state.player_money.to_string()),
-        row("     Kills", state.player_num_kills.to_string()),
-        row("        GP", state.gp.to_string()),
+        row("Money", state.player_money.to_string()),
+        row("Kills", state.player_num_kills.to_string()),
+        row("GP", state.gp.to_string()),
     ]
 }
 
