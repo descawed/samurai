@@ -19,6 +19,7 @@ fn detail_style() -> Style {
 fn summary_line(data: &CharacterData) -> Line<'static> {
     let mut spans = vec![
         Span::raw(format!("{:>3} ", data.chara_id.value())),
+        Span::raw(format!("{:<17} ", data.chara_id.constant_name().unwrap_or(""))),
         Span::raw(format!("{:<22}", data.chara_id.display_name())),
         Span::raw(format!(" {}/{}", data.health, data.max_health)),
     ];
