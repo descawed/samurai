@@ -69,6 +69,22 @@ fn describe_character_flags(chara: &Character) -> String {
     }
 }
 
+/// Describe watch type and watched object for WATCH_OBJECT type
+fn describe_watch_type(chara: &Character) -> String {
+    let mut watch_type = chara.watch_type.display_name().to_string();
+    if chara.watch_type.value() == 2 /* WATCH_OBJECT */ {
+        watch_type.push_str(" (");
+        if chara.is_drop_watch() {
+            watch_type.push_str("drop");
+        } else {
+            watch_type.push_str(chara.watched_obj_id.display_name());
+        }
+        watch_type.push(')');
+    }
+
+    watch_type
+}
+
 fn detail_lines(chara: &Character, data: &CharacterData) -> Vec<Line<'static>> {
     let position = chara.position;
     let active_events: Vec<&str> = chara
@@ -123,7 +139,7 @@ fn detail_lines(chara: &Character, data: &CharacterData) -> Vec<Line<'static>> {
             if chara.is_watch_enabled() {
                 format!(
                     "{} -> {}",
-                    chara.watch_type.display_name(),
+                    describe_watch_type(chara),
                     labeled_constant(chara.watched_chara_id.value(), chara.watched_chara_id.constant_name()),
                 )
             } else {
