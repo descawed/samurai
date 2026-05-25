@@ -6,7 +6,7 @@ use std::io::{BufReader, Read, Seek};
 use std::ops::Deref;
 use std::path::Path;
 
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 
 pub mod cli;
 pub mod debug;

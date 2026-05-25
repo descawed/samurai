@@ -3,6 +3,7 @@ use bytemuck::Zeroable;
 use sysinfo::Pid;
 
 use super::{DebugError, Result};
+use super::constants::*;
 use super::emulator::Emulator;
 
 const FINGERPRINT_STRING: &[u8] = b"CreateFormatString: arg is not string.";
@@ -22,19 +23,19 @@ pub struct GameState {
     pub gp: i32,
     unk004: [u8; 0x7c],
     pub status: i8, // 2 = SetGameStop, 3 = SetGameClear, 4 = ???
-    pub map_id: i8,
-    unk_map_id: i8,
+    pub map_id: Map,
+    unk_map_id: Map,
     pub exit_id: i8,
-    pub map_time_id: i8,
-    unk_map_time_id: i8,
+    pub map_time_id: Time,
+    unk_map_time_id: Time,
     pub phase_id: i8,
-    pub player_footing: i8,
+    pub player_footing: Footing,
     pub event_man_flags: [i8; 128],
-    pub event_pro_flags: [i8; 32],
+    pub event_pro_flags: [EventProgress; 32],
     pub player_money: i16,
     unk12a: i16,
     pub player_num_kills: i32,
-    pub difficulty: i32,
+    pub difficulty: Difficulty,
     pub event_id: i32,
     pub int_vars: [i32; 256],
     pub event_act_end_flags: [i8; 32],
@@ -53,25 +54,25 @@ pub struct CharacterData {
     pub transform: [f32; 16],
     unk040: [f32; 4],
     pub chara_type_id: i32,
-    pub chara_id: i32,
+    pub chara_id: CharacterId,
     pub health: i16,
     pub max_health: i16,
     pub weapon_id: i16,
     pub samurai_value: i16,
     pub battle_value: i16,
     is_dead: i8,
-    friend_flag: i8,
-    footing: i8,
+    pub friend_flag: Friend,
+    pub footing: Footing,
     unk065: i8,
     pub daikon_flag: i8,
-    death_item: i8,
+    pub death_item: Object,
     pub level: i8,
     unk069: i8,
     unk06a: i8,
     unk06b: i8,
     unk06c: i32,
     unk070: i32,
-    possible_weapons: [i16; 100],
+    pub possible_weapons: [i16; 100],
     unk13c: [u8; 0xc4],
 }
 
@@ -81,18 +82,18 @@ impl CharacterData {
             transform: [0.0; 16],
             unk040: [0.0; 4],
             chara_type_id: 0,
-            chara_id: 0,
+            chara_id: CharacterId::new(0),
             health: 0,
             max_health: 0,
             weapon_id: 0,
             samurai_value: 0,
             battle_value: 0,
             is_dead: 0,
-            friend_flag: 0,
-            footing: 0,
+            friend_flag: Friend::new(0),
+            footing: Footing::new(0),
             unk065: 0,
             daikon_flag: 0,
-            death_item: 0,
+            death_item: Object::new(0),
             level: 0,
             unk069: 0,
             unk06a: 0,
@@ -135,12 +136,12 @@ struct LinkedListEntry {
 #[derive(Debug, Clone, Zeroable)]
 pub struct WeaponInstance {
     unk00: i32,
-    weapon_id: i16,
-    durability: i16,
-    hardness: i16,
-    health_bonus: i16,
-    attack: i16,
-    defense: i16,
+    pub weapon_id: i16,
+    pub durability: i16,
+    pub hardness: i16,
+    pub health_bonus: i16,
+    pub attack: i16,
+    pub defense: i16,
 }
 
 impl Default for WeaponInstance {
@@ -152,7 +153,7 @@ impl Default for WeaponInstance {
 #[binrw]
 #[derive(Debug, Clone, Zeroable)]
 pub struct CharacterLine {
-    line_range: f32,
+    pub line_range: f32,
     has_char_joined: [i8; NUM_CHARACTERS + 1],
 }
 
@@ -166,7 +167,7 @@ impl Default for CharacterLine {
 #[derive(Debug, Clone, Zeroable)]
 pub struct CharacterTimeout {
     is_enabled: i32,
-    timeout_seconds: u32,
+    pub timeout_seconds: u32,
 }
 
 impl Default for CharacterTimeout {
@@ -179,67 +180,67 @@ impl Default for CharacterTimeout {
 #[derive(Debug, Clone, Zeroable)]
 pub struct Character {
     unk000: [u8; 0x350], // 000
-    position: [f32; 4], // 350
+    pub position: [f32; 4], // 350
     unk360: [u8; 0x28], // 360
     data: u32, // pointer to CharacterData; 388
     unk38c: [u8; 0x36], // 38c
     flags: u16, // 0x4 = invincible, 0x20 = pos fix mode; 3c2
-    animation_id: i32, // ID in the low 12 bits, flags in the high bits; 3c4
+    pub animation_id: Animation, // ID in the low 12 bits, flags in the high bits; 3c4
     flags2: u32, // 0x2 = stop, 0x400 = has target character, 0x40000 = dead, 0x4000000 = hi face mode; 3c8
     unk3cc: u32, // 3cc
-    base_max_health: i32, // 3d0
+    pub base_max_health: i32, // 3d0
     unk3d4: [u8; 0x13c], // 3d4
-    current_func_id: u32, // 510
-    last_func_id: u32, // 514
+    pub current_func_id: u32, // 510
+    pub last_func_id: u32, // 514
     unk518: [u8; 0x20], // 518
-    base_health: i16, // 538
+    pub base_health: i16, // 538
     unk53a: [u8; 10], // 53a
-    held_object: i32, // 544
+    pub held_object: Object, // 544
     target_character: u32, // 548
     unk54c: u32, // 54c
     attacker: u32, // 550
     unk554: [u8; 12], // 554
     facing_character: u32, // 560
     unk564: [u8; 0x10], // 564
-    weapons: [WeaponInstance; 3], // 574
-    equipped_weapon_index: i16, // 5a4
-    num_weapons: i16, // 5a6
+    pub weapons: [WeaponInstance; 3], // 574
+    pub equipped_weapon_index: i16, // 5a4
+    pub num_weapons: i16, // 5a6
     unk5a8: [u8; 0x38], // 5a8
-    lines: [CharacterLine; 4], // 5e0
-    line_view_fov_half: f32, // 790
-    line_view_range: f32, // 794
-    line_view_vertical_range: f32, // 798
+    pub lines: [CharacterLine; 4], // 5e0
+    pub line_view_fov_half: f32, // 790
+    pub line_view_range: f32, // 794
+    pub line_view_vertical_range: f32, // 798
     has_char_joined_view: [i8; NUM_CHARACTERS + 1], // 79c
     unk804: [u8; 0xc], // 804
-    watched_chara_range: f32, // 810
-    watched_chara_id: i32, // 814
-    watch_type: i32, // 818
+    pub watched_chara_range: f32, // 810
+    pub watched_chara_id: CharacterId, // 814
+    pub watch_type: Watch, // 818
     unk81c: u32, // 81c
-    watched_chara_start_position: [f32; 4], // 820
+    pub watched_chara_start_position: [f32; 4], // 820
     is_drop_watch: i32, // 830
-    watched_obj_id: i32, // 834
+    pub watched_obj_id: Object, // 834
     unk838: [u8; 8], // 838
-    say_task_id: i32, // 840
+    pub say_task_id: i32, // 840
     unk844: [u8; 8], // 844
-    say_duration: i16, // 84c
-    say_start_delay: i16, // 84e
-    listener_chara_id: i32, // 850
+    pub say_duration: i16, // 84c
+    pub say_start_delay: i16, // 84e
+    pub listener_chara_id: CharacterId, // 850
     unk854: [u8; 0xc], // 854
-    timeouts: [CharacterTimeout; NUM_CHARACTERS], // 860
+    pub timeouts: [CharacterTimeout; NUM_CHARACTERS], // 860
     flags3: u64, // b98
-    event_modes: u64, // flags, 1 << EVENT constant; ba0
+    pub event_modes: u64, // flags, 1 << EVENT constant; ba0
     unk_event_modes: u64, // ba8
     unkbb0: u32, // bb0
-    ai_group_id: i32, // bb4
+    pub ai_group_id: i32, // bb4
     unkbb8: [u8; 8], // bb8
-    throw_count: i32, // bc0
+    pub throw_count: i32, // bc0
     name: [u8; 16], // bc4
     unkbd4: u8, // bd4
     say_dead_flag: i8, // bd5
     unkbd6: [u8; 0x1e], // bd6
-    ai_mode: i32, // bf4
+    pub ai_mode: AiStatus, // bf4
     unkbf8: [u8; 0xa0], // bf8
-    special_state: i32, // 1 = death blow, 2 = waiting; c98
+    pub special_state: i32, // 1 = death blow, 2 = waiting; c98
     unkc9c: [u8; 0x34], // c9c
 }
 
@@ -329,19 +330,30 @@ impl Game {
             }
         }
 
-        self.game_state = self.emulator.read(self.version.game_state_address, GAME_STATE_SIZE)?;
-        self.character_data = self.emulator.read(self.version.character_data_address, CHARACTER_DATA_SIZE * NUM_CHARACTERS)?;
+        self.game_state = self
+            .emulator
+            .read(self.version.game_state_address, GAME_STATE_SIZE)?;
+        self.character_data = self.emulator.read(
+            self.version.character_data_address,
+            CHARACTER_DATA_SIZE * NUM_CHARACTERS,
+        )?;
 
         let char_data_start = self.version.character_data_address as u32;
-        let char_data_end = (self.version.character_data_address + CHARACTER_DATA_SIZE * NUM_CHARACTERS) as u32;
+        let char_data_end =
+            (self.version.character_data_address + CHARACTER_DATA_SIZE * NUM_CHARACTERS) as u32;
 
         // characters in the scene are a linked list. we need to be a bit careful here as we can't
         // read it all in one go, so it can change while we're reading it.
         self.characters.clear();
 
-        let list_head: LinkedListHead = self.emulator.read(self.version.character_list_address, LINKED_LIST_SIZE)?;
+        let list_head: LinkedListHead = self
+            .emulator
+            .read(self.version.character_list_address, LINKED_LIST_SIZE)?;
         let list_begin = list_head.first as usize;
-        if list_head.count == 0 || list_head.count > MAX_EVENT_CHARACTERS || !Emulator::is_address_valid(list_begin, LINKED_LIST_SIZE) {
+        if list_head.count == 0
+            || list_head.count > MAX_EVENT_CHARACTERS
+            || !Emulator::is_address_valid(list_begin, LINKED_LIST_SIZE)
+        {
             // if something looks fishy, it could mean things aren't initialized properly. we'll just bail.
             // on the other hand, if the count is 0, we simply don't need to do anything.
             return Ok(());
@@ -377,7 +389,11 @@ impl Game {
         Ok(())
     }
 
-    pub fn iter_characters(&self) -> impl Iterator<Item = &Character> {
-        self.characters.iter()
+    pub fn iter_characters(&self) -> impl Iterator<Item = (&Character, &CharacterData)> {
+        self.characters.iter().map(|chara| {
+            // we know the data pointer is in the character data range because we checked it in update()
+            let data_index = (chara.data as usize - self.version.character_data_address) / CHARACTER_DATA_SIZE;
+            (chara, &self.character_data[data_index])
+        })
     }
 }

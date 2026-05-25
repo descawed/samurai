@@ -149,7 +149,8 @@ impl Analyzer {
                     let (obj_expr, is_global_obj) = obj_expr.unwrap_global();
                     let is_global = is_global_obj || is_global;
                     if let Expression::Variable(obj_var) = obj_expr
-                        && let Some(inner_sig) = scope.borrow().lookup_method(obj_var, name, is_global)
+                        && let Some(inner_sig) =
+                            scope.borrow().lookup_method(obj_var, name, is_global)
                     {
                         self.update_return_type(&inner_sig, final_arg_type);
                     }
@@ -167,14 +168,18 @@ impl Analyzer {
             Expression::ValueDeclaration(lhs, rhs) => {
                 let (left_expr, is_global_var) = lhs.unwrap_global();
                 let is_global = is_global_var || is_global;
-                if let Expression::Variable(var) = left_expr && let Some(value) = get_expression_type(&scope, &*rhs) {
+                if let Expression::Variable(var) = left_expr
+                    && let Some(value) = get_expression_type(&scope, &*rhs)
+                {
                     self.define(&mut scope, var, is_global, value.clone());
                 }
             }
             Expression::ReferenceDeclaration(lhs, rhs) => {
                 let (left_expr, is_global_var) = lhs.unwrap_global();
                 let is_global = is_global_var || is_global;
-                if let Expression::Variable(var) = left_expr && let Some(value) = get_expression_type(&scope, &*rhs) {
+                if let Expression::Variable(var) = left_expr
+                    && let Some(value) = get_expression_type(&scope, &*rhs)
+                {
                     self.define(&mut scope, var, is_global, value);
                 }
             }

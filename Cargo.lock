@@ -2040,6 +2040,7 @@ dependencies = [
  "encoding_rs",
  "image",
  "itertools",
+ "num-traits",
  "object 0.39.1",
  "ordered_hash_map",
  "pathdiff",

@@ -1,6 +1,8 @@
 use std::time::{Duration, Instant};
 
-use sysinfo::{Pid, Process, ProcessesToUpdate, ProcessRefreshKind, RefreshKind, System, UpdateKind};
+use sysinfo::{
+    Pid, Process, ProcessRefreshKind, ProcessesToUpdate, RefreshKind, System, UpdateKind,
+};
 
 #[derive(Debug)]
 pub struct Platform {
@@ -47,6 +49,9 @@ impl Platform {
     }
 
     pub fn active_processes(&self) -> impl Iterator<Item = (Pid, &Process)> {
-        self.system.processes().iter().map(|(pid, process)| (*pid, process))
+        self.system
+            .processes()
+            .iter()
+            .map(|(pid, process)| (*pid, process))
     }
 }

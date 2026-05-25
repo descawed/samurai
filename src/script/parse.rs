@@ -2,13 +2,14 @@ use std::fmt::{Display, Formatter};
 use std::ops::{Deref, DerefMut};
 use std::rc::Rc;
 
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use chumsky::prelude::*;
 use itertools::Itertools;
 
 use super::types::{Scope, SharedScope, Variable};
 
-const IDENTIFIER_CHARACTERS: &str = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_";
+const IDENTIFIER_CHARACTERS: &str =
+    "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_";
 
 #[derive(Debug, Clone)]
 pub(super) struct Block(Vec<Statement>, Option<SharedScope>);
@@ -136,8 +137,7 @@ impl Expression {
 
     pub fn declaration_mut(&mut self) -> Option<(&mut Self, &mut Self)> {
         match self {
-            Self::ReferenceDeclaration(lhs, rhs)
-            | Self::ValueDeclaration(lhs, rhs) => {
+            Self::ReferenceDeclaration(lhs, rhs) | Self::ValueDeclaration(lhs, rhs) => {
                 Some((lhs.as_mut(), rhs.as_mut()))
             }
             Self::Global(e) => e.declaration_mut(),
@@ -356,8 +356,8 @@ impl Display for Statement {
     }
 }
 
-pub(super) fn parser<'src>(
-) -> impl Parser<'src, &'src str, Block, extra::Err<Rich<'src, char, SimpleSpan<usize>>>> {
+pub(super) fn parser<'src>()
+-> impl Parser<'src, &'src str, Block, extra::Err<Rich<'src, char, SimpleSpan<usize>>>> {
     let int = text::digits(10)
         .to_slice()
         .from_str()
@@ -394,9 +394,14 @@ pub(super) fn parser<'src>(
     let var = recursive(|var| {
         just('#')
             .padded() // at least one script has a variable usage with a space between the # and the identifier
-            .ignore_then(one_of(IDENTIFIER_CHARACTERS).repeated().at_least(1).collect::<String>())
-            .then(var.or_not()).map(
-            |(v, a): (String, Option<Expression>)| {
+            .ignore_then(
+                one_of(IDENTIFIER_CHARACTERS)
+                    .repeated()
+                    .at_least(1)
+                    .collect::<String>(),
+            )
+            .then(var.or_not())
+            .map(|(v, a): (String, Option<Expression>)| {
                 Expression::Variable(Variable(
                     v,
                     a.map(|e| match e {
@@ -404,8 +409,7 @@ pub(super) fn parser<'src>(
                         _ => unreachable!(),
                     }),
                 ))
-            },
-        )
+            })
     });
 
     // slightly redundant global parsing to reduce recursion in expressions
@@ -478,7 +482,9 @@ pub(super) fn parser<'src>(
                 .then(expr.clone())
                 .then_ignore(just(',').padded())
                 .then(expr.clone())
-                .map(|((c, t), f)| Expression::TernaryConditional(Box::new(c), Box::new(t), Box::new(f)));
+                .map(|((c, t), f)| {
+                    Expression::TernaryConditional(Box::new(c), Box::new(t), Box::new(f))
+                });
 
             // a small number of scripts have function definitions that are lacking the ?F keyword,
             // and some have only a ? with no F. I don't know if this even works as intended
@@ -520,8 +526,8 @@ pub(super) fn parser<'src>(
             // parse will succeed, and the parser will then error on the subsequent assignment
             // operator or method name, obscuring the true source of the error. to prevent that,
             // we only allow parsing an atom if it's not part of a declaration or method call.
-            let decl_or_method = any_var
-                .then_ignore(text::ident().or(one_of("=<>|:").to_slice()).padded());
+            let decl_or_method =
+                any_var.then_ignore(text::ident().or(one_of("=<>|:").to_slice()).padded());
 
             func_def
                 .or(ref_decl)
@@ -1093,7 +1099,9 @@ mod tests {
         let Statement::Expression(Expression::ValueDeclaration(var, value)) = stmt else {
             panic!("Statement was not a value declaration expression");
         };
-        assert!(matches!(*var, Expression::Variable(Variable(ref s, None)) if s == "2ndret_pliantly"));
+        assert!(
+            matches!(*var, Expression::Variable(Variable(ref s, None)) if s == "2ndret_pliantly")
+        );
         let Expression::Int(num) = *value else {
             panic!("Value was not a number literal");
         };
@@ -1125,11 +1133,17 @@ mod tests {
     #[test]
     fn test_extra_semicolon() {
         let parser = parser();
-        let mut result = parser.parse("\
+        let mut result = parser
+            .parse(
+                "\
         SetFixCamera -1, 0;
         ;
-        ").unwrap().into_iter();
-        let Some(Statement::Expression(Expression::FunctionCall(ref s, ref args))) = result.next() else {
+        ",
+            )
+            .unwrap()
+            .into_iter();
+        let Some(Statement::Expression(Expression::FunctionCall(ref s, ref args))) = result.next()
+        else {
             panic!("Statement was not a function call expression");
         };
         assert_eq!(s, "SetFixCamera");
@@ -1144,12 +1158,14 @@ mod tests {
 
     #[test]
     fn test_extra_semicolon_in_block() {
-        let stmt = one_statement("\
+        let stmt = one_statement(
+            "\
         ?i( #wp eq 0 ) {
             $SetFixCamera -1, 0;
             ;
         };
-        ");
+        ",
+        );
         let Statement::Conditional(Conditional(_, block, None), None) = stmt else {
             panic!("Statement was not an if statement with no else or else-if");
         };
@@ -1192,15 +1208,18 @@ mod tests {
     #[test]
     fn test_while_loop() {
         let parser = parser();
-        let mut result = parser.parse(
-            "\
+        let mut result = parser
+            .parse(
+                "\
     ?W{
         (#iii le 84)},{
         $AIDeleteCharacter #iii;
         #iii add 1;
     };
-            "
-        ).unwrap().into_iter();
+            ",
+            )
+            .unwrap()
+            .into_iter();
         let stmt = result.next().unwrap();
         assert!(matches!(stmt, Statement::WhileLoop(_, _)));
         assert!(matches!(result.next(), None));
@@ -1227,7 +1246,10 @@ mod tests {
     #[test]
     fn test_ternary() {
         let stmt = one_statement("?I (#a eq #b), 1, 0;");
-        assert!(matches!(stmt, Statement::Expression(Expression::TernaryConditional(_, _, _))));
+        assert!(matches!(
+            stmt,
+            Statement::Expression(Expression::TernaryConditional(_, _, _))
+        ));
     }
 
     #[test]

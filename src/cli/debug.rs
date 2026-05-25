@@ -43,7 +43,10 @@ impl DebuggerApp {
             // TODO
             frame.render_widget("Game is running", frame.area());
         } else if self.debugger.is_emulator_running() {
-            let message = format!("Found PCSX2, PID: {}. Waiting for Way of the Samurai...", self.debugger.pid().unwrap());
+            let message = format!(
+                "Found PCSX2, PID: {}. Waiting for Way of the Samurai...",
+                self.debugger.pid().unwrap()
+            );
             frame.render_widget(message, frame.area());
         } else {
             frame.render_widget("Waiting for PCSX2...", frame.area());

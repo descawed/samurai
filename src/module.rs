@@ -1,7 +1,7 @@
 use std::io::{Read, Seek, SeekFrom, Write};
 
 use anyhow::Result;
-use binrw::{binrw, BinReaderExt, BinWriterExt};
+use binrw::{BinReaderExt, BinWriterExt, binrw};
 
 use crate::{Readable, Validated};
 
@@ -61,7 +61,11 @@ impl ModuleArchive {
     }
 
     pub fn write<F: Write + Seek>(&self, mut f: F) -> Result<()> {
-        let module_sizes = self.modules.iter().map(|m| m.len() as u32).collect::<Vec<_>>();
+        let module_sizes = self
+            .modules
+            .iter()
+            .map(|m| m.len() as u32)
+            .collect::<Vec<_>>();
         let header = ModuleHeader::new(self.alignment, module_sizes);
 
         f.write_le(&header)?;
@@ -103,10 +107,7 @@ impl Readable for ModuleArchive {
         }
 
         Ok(Validated {
-            object: Self {
-                alignment,
-                modules,
-            },
+            object: Self { alignment, modules },
             warnings,
         })
     }

@@ -63,7 +63,11 @@ impl Emulator {
             let mut buf = [0u8; 8];
             memory.read_exact_at(&mut buf, ee_mem_ptr).unwrap();
             let ee_mem_base = usize::from_le_bytes(buf);
-            return Some(Self { memory, ee_mem_base, pid });
+            return Some(Self {
+                memory,
+                ee_mem_base,
+                pid,
+            });
         }
 
         None
@@ -89,15 +93,20 @@ impl Emulator {
 
     pub fn read_memory(&self, address: usize, size: usize) -> Result<Vec<u8>> {
         if address.saturating_add(size) > EE_MEM_SIZE {
-            return Err(std::io::Error::new(ErrorKind::UnexpectedEof, "attempt to read past end of EE memory").into());
+            return Err(std::io::Error::new(
+                ErrorKind::UnexpectedEof,
+                "attempt to read past end of EE memory",
+            )
+            .into());
         }
 
         let mut buf = vec![0u8; size];
-        self.memory.read_exact_at(&mut buf, (self.ee_mem_base + address) as u64)?;
+        self.memory
+            .read_exact_at(&mut buf, (self.ee_mem_base + address) as u64)?;
         Ok(buf)
     }
 
-    pub fn read<'a, T: BinRead<Args<'a>=()>>(&self, address: usize, size: usize) -> Result<T> {
+    pub fn read<'a, T: BinRead<Args<'a> = ()>>(&self, address: usize, size: usize) -> Result<T> {
         let data = self.read_memory(address, size)?;
         let value = Cursor::new(data).read_le()?;
         Ok(value)
@@ -105,14 +114,23 @@ impl Emulator {
 
     pub fn write_memory(&self, address: usize, data: &[u8]) -> Result<()> {
         if address.saturating_add(data.len()) > EE_MEM_SIZE {
-            return Err(std::io::Error::new(ErrorKind::UnexpectedEof, "attempt to write past end of EE memory").into());
+            return Err(std::io::Error::new(
+                ErrorKind::UnexpectedEof,
+                "attempt to write past end of EE memory",
+            )
+            .into());
         }
 
-        self.memory.write_all_at(&data, (self.ee_mem_base + address) as u64)?;
+        self.memory
+            .write_all_at(&data, (self.ee_mem_base + address) as u64)?;
         Ok(())
     }
 
-    pub fn write<T: for<'a> BinWrite<Args<'a>=()>>(&self, address: usize, value: &T) -> Result<()> {
+    pub fn write<T: for<'a> BinWrite<Args<'a> = ()>>(
+        &self,
+        address: usize,
+        value: &T,
+    ) -> Result<()> {
         let mut buf = Cursor::new(Vec::new());
         value.write_le(&mut buf)?;
         self.write_memory(address, &buf.into_inner())?;
