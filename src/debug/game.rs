@@ -65,7 +65,7 @@ pub struct CharacterData {
     pub footing: Footing,
     unk065: i8,
     pub daikon_flag: i8,
-    pub death_item: Object,
+    death_item: i8,
     pub level: i8,
     unk069: i8,
     unk06a: i8,
@@ -93,7 +93,7 @@ impl CharacterData {
             footing: Footing::new(0),
             unk065: 0,
             daikon_flag: 0,
-            death_item: Object::new(0),
+            death_item: 0,
             level: 0,
             unk069: 0,
             unk06a: 0,
@@ -107,6 +107,10 @@ impl CharacterData {
 
     pub const fn is_dead(&self) -> bool {
         self.is_dead != 0
+    }
+
+    pub fn death_item(&self) -> Object {
+        Object::from(self.death_item as i32)
     }
 }
 
@@ -244,6 +248,14 @@ pub struct Character {
     unkc9c: [u8; 0x34], // c9c
 }
 
+impl Character {
+    /// For each `EVENT_` mode, returns its name and whether the corresponding bit is set in
+    /// `event_modes`. Entries are ordered by the constants' values.
+    pub fn event_mode_flags(&self) -> [(&'static str, bool); 15] {
+        event_modes(self.event_modes)
+    }
+}
+
 impl Default for Character {
     fn default() -> Self {
         Self::zeroed()
@@ -318,6 +330,10 @@ impl Game {
 
     pub fn pid(&self) -> Pid {
         self.emulator.pid()
+    }
+
+    pub fn version_name(&self) -> &'static str {
+        self.version.name
     }
 
     pub fn update(&mut self) -> Result<()> {
