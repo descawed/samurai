@@ -1,5 +1,5 @@
 use std::collections::HashSet;
-use std::fmt::Display;
+use std::fmt::{Display, UpperHex};
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
@@ -31,8 +31,8 @@ const MIN_WIDE_HEIGHT: u16 = 16;
 /// Width of the flags panel in the wide layout. Flag rows are short (the widest is a pro-flag
 /// constant name), so we cap the panel and let the left column take the remaining width.
 const FLAGS_WIDTH: u16 = 34;
-/// Height of the globals panel in the wide layout (11 rows + borders).
-const GLOBALS_HEIGHT: u16 = 13;
+/// Height of the globals panel in the wide layout (12 rows + borders).
+const GLOBALS_HEIGHT: u16 = 14;
 
 /// Border color for the panel that currently has focus.
 const FOCUS_COLOR: Color = Color::Cyan;
@@ -312,6 +312,13 @@ fn labeled_constant<I: Display>(value: I, name: Option<&str>) -> String {
     match name {
         Some(name) => format!("{value} ({name})"),
         None => format!("{value}"),
+    }
+}
+
+fn labeled_constant_hex<I: Display + UpperHex>(value: I, name: Option<&str>) -> String {
+    match name {
+        Some(name) => format!("{value:08X} ({name})"),
+        None => format!("{value:08X}"),
     }
 }
 

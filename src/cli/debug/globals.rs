@@ -38,6 +38,7 @@ fn build_lines(game: &Game) -> Vec<Line<'static>> {
         ),
         row("Money", state.player_money.to_string()),
         row("Kills", state.player_num_kills.to_string()),
+        row("Samurai", game.character_data[0].samurai_value.to_string()),
         row("GP", state.gp.to_string()),
     ]
 }

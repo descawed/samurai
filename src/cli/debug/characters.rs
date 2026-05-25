@@ -8,7 +8,7 @@ use ratatui::widgets::{List, ListItem, ListState};
 
 use crate::debug::*;
 
-use super::{labeled_constant, panel_block};
+use super::{labeled_constant, labeled_constant_hex, panel_block};
 
 /// Style for the indented detail rows shown when a character is expanded.
 fn detail_style() -> Style {
@@ -34,6 +34,41 @@ fn detail(label: &str, value: String) -> Line<'static> {
     Line::from(format!("    {label}: {value}")).style(detail_style())
 }
 
+/// Noteworthy flags enabled for a character
+fn describe_character_flags(chara: &Character) -> String {
+    let mut labels = Vec::with_capacity(6);
+
+    if chara.is_invincible() {
+        labels.push("invincible");
+    }
+
+    if chara.is_pos_fix_mode() {
+        labels.push("pos fix mode");
+    }
+
+    if chara.is_stopped() {
+        labels.push("stop");
+    }
+
+    if chara.is_dead() {
+        labels.push("dead");
+    }
+
+    if chara.is_hi_face_mode() {
+        labels.push("hi face mode");
+    }
+
+    if chara.say_dead_flag() {
+        labels.push("say dead");
+    }
+
+    if !labels.is_empty() {
+        labels.join(", ")
+    } else {
+        "none".to_string()
+    }
+}
+
 fn detail_lines(chara: &Character, data: &CharacterData) -> Vec<Line<'static>> {
     let position = chara.position;
     let active_events: Vec<&str> = chara
@@ -46,9 +81,11 @@ fn detail_lines(chara: &Character, data: &CharacterData) -> Vec<Line<'static>> {
     } else {
         active_events.join(", ")
     };
+    let event_line = format!("{:08X} ({})", chara.event_modes, events);
 
     vec![
         detail("Type ID", data.chara_type_id.to_string()),
+        detail("Level", data.level.to_string()),
         detail(
             "Footing",
             labeled_constant(data.footing.value(), data.footing.constant_name()),
@@ -57,7 +94,7 @@ fn detail_lines(chara: &Character, data: &CharacterData) -> Vec<Line<'static>> {
             "Friend",
             format!("{} ({})", data.friend_flag.value(), data.friend_flag.display_name()),
         ),
-        detail("Level", data.level.to_string()),
+        detail("Daikon", data.daikon_flag.to_string()),
         detail(
             "Weapon",
             format!(
@@ -66,33 +103,32 @@ fn detail_lines(chara: &Character, data: &CharacterData) -> Vec<Line<'static>> {
             ),
         ),
         detail(
-            "Samurai/Battle",
-            format!("{}/{}", data.samurai_value, data.battle_value),
-        ),
-        detail(
             "AI",
             format!(
                 "{}  group {}",
-                labeled_constant(chara.ai_mode.value(), chara.ai_mode.constant_name()),
+                labeled_constant_hex(chara.ai_mode.value(), chara.ai_mode.constant_name()),
                 chara.ai_group_id
             ),
         ),
         detail(
             "Animation",
-            labeled_constant(chara.animation_id.value(), chara.animation_id.constant_name()),
+            labeled_constant_hex(chara.animation_id.value(), chara.animation_id.constant_name()),
         ),
         detail(
             "Func",
             format!("cur {} last {}", chara.current_func_id, chara.last_func_id),
         ),
-        detail("Held", chara.held_object.display_name().to_string()),
         detail(
             "Watch",
-            format!(
-                "{} -> {}",
-                chara.watch_type.display_name(),
-                chara.watched_chara_id.display_name()
-            ),
+            if chara.is_watch_enabled() {
+                format!(
+                    "{} -> {}",
+                    chara.watch_type.display_name(),
+                    labeled_constant(chara.watched_chara_id.value(), chara.watched_chara_id.constant_name()),
+                )
+            } else {
+                "none".to_string()
+            },
         ),
         detail(
             "Pos",
@@ -102,7 +138,8 @@ fn detail_lines(chara: &Character, data: &CharacterData) -> Vec<Line<'static>> {
             "Special",
             format!("{}  throws {}", chara.special_state, chara.throw_count),
         ),
-        detail("Events", events),
+        detail("Events", event_line),
+        detail("Flags", describe_character_flags(chara)),
     ]
 }
 

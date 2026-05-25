@@ -109,8 +109,8 @@ impl CharacterData {
         self.is_dead != 0
     }
 
-    pub fn death_item(&self) -> Object {
-        Object::from(self.death_item as i32)
+    pub fn death_item(&self) -> ObjectId {
+        ObjectId::from(self.death_item as i32)
     }
 }
 
@@ -199,7 +199,7 @@ pub struct Character {
     unk518: [u8; 0x20], // 518
     pub base_health: i16, // 538
     unk53a: [u8; 10], // 53a
-    pub held_object: Object, // 544
+    held_object: u32, // 544
     target_character: u32, // 548
     unk54c: u32, // 54c
     attacker: u32, // 550
@@ -222,7 +222,7 @@ pub struct Character {
     unk81c: u32, // 81c
     pub watched_chara_start_position: [f32; 4], // 820
     is_drop_watch: i32, // 830
-    pub watched_obj_id: Object, // 834
+    pub watched_obj_id: ObjectId, // 834
     unk838: [u8; 8], // 838
     pub say_task_id: i32, // 840
     unk844: [u8; 8], // 844
@@ -231,7 +231,7 @@ pub struct Character {
     pub listener_chara_id: CharacterId, // 850
     unk854: [u8; 0xc], // 854
     pub timeouts: [CharacterTimeout; NUM_CHARACTERS], // 860
-    flags3: u64, // b98
+    flags3: u64, // 0x20 = watch enabled; b98
     pub event_modes: u64, // flags, 1 << EVENT constant; ba0
     unk_event_modes: u64, // ba8
     unkbb0: u32, // bb0
@@ -249,6 +249,42 @@ pub struct Character {
 }
 
 impl Character {
+    pub const fn is_invincible(&self) -> bool {
+        self.flags & 0x4 != 0
+    }
+    
+    pub const fn is_pos_fix_mode(&self) -> bool {
+        self.flags & 0x20 != 0
+    }
+    
+    pub const fn is_stopped(&self) -> bool {
+        self.flags2 & 0x2 != 0
+    }
+    
+    pub const fn has_target_character(&self) -> bool {
+        self.flags2 & 0x400 != 0
+    }
+    
+    pub const fn is_dead(&self) -> bool {
+        self.flags2 & 0x40000 != 0
+    }
+    
+    pub const fn is_hi_face_mode(&self) -> bool {
+        self.flags2 & 0x4000000 != 0
+    }
+    
+    pub const fn is_watch_enabled(&self) -> bool {
+        self.flags3 & 0x20 != 0
+    }
+    
+    pub const fn say_dead_flag(&self) -> bool {
+        self.say_dead_flag != 0
+    }
+    
+    pub const fn is_drop_watch(&self) -> bool {
+        self.is_drop_watch != 0
+    }
+    
     /// For each `EVENT_` mode, returns its name and whether the corresponding bit is set in
     /// `event_modes`. Entries are ordered by the constants' values.
     pub fn event_mode_flags(&self) -> [(&'static str, bool); 15] {

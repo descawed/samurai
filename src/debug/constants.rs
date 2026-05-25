@@ -236,8 +236,8 @@ impl GameConstant<i32, 16> for AiStatus {
             Self(11),
             Self(12),
             Self(13),
-            Self(268435456),
-            Self(1073741824),
+            Self(0x10000000),
+            Self(0x40000000),
         ]
     }
 
@@ -246,7 +246,11 @@ impl GameConstant<i32, 16> for AiStatus {
     }
 
     fn constant_name(&self) -> Option<&'static str> {
-        Some(match self.0 {
+        // there appear to be some flags set in the high bits. I'm not sure if AI_DEFENCE and AI_ESCORT
+        // are flags too - they look like it, but I have seen scripts set AI_DEFENCE directly. for now,
+        // I'll just mask out the bits that I know are flags.
+        let ai_status = self.0 & 0x7f00ffff;
+        Some(match ai_status {
             0 => "AI_BATTLE",
             1 => "AI_NONCOM_IDLE",
             2 => "AI_CHASE",
@@ -261,8 +265,8 @@ impl GameConstant<i32, 16> for AiStatus {
             11 => "AI_CASTOFF",
             12 => "AI_RUGBY",
             13 => "AI_ANIMAL",
-            268435456 => "AI_DEFENCE",
-            1073741824 => "AI_ESCORT",
+            0x10000000 => "AI_DEFENCE",
+            0x40000000 => "AI_ESCORT",
             _ => return None,
         })
     }
@@ -907,15 +911,15 @@ impl From<i32> for Animation {
 #[binrw]
 #[derive(Debug, Clone, Copy, Ord, PartialOrd, Eq, PartialEq, Hash, Zeroable)]
 #[repr(transparent)]
-pub struct Object(i32);
+pub struct ObjectId(i32);
 
-impl Object {
+impl ObjectId {
     pub const fn new(value: i32) -> Self {
         Self(value)
     }
 }
 
-impl GameConstant<i32, 75> for Object {
+impl GameConstant<i32, 75> for ObjectId {
     fn value(&self) -> i32 {
         self.0
     }
@@ -1009,9 +1013,9 @@ impl GameConstant<i32, 75> for Object {
     }
 }
 
-impl From<i32> for Object {
+impl From<i32> for ObjectId {
     fn from(value: i32) -> Self {
-        Object(value)
+        ObjectId(value)
     }
 }
 
