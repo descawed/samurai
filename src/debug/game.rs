@@ -13,7 +13,9 @@ const NUM_CHARACTERS: usize = 103;
 /// Maximum number of characters that can be in any given event at the same time
 const MAX_EVENT_CHARACTERS: u32 = 30;
 const CHARACTER_DATA_SIZE: usize = 0x200;
-const CHARACTER_SIZE: usize = 0xcd0;
+/// Size of a `Character` in the original release. Later versions insert an extra 0x100-byte block
+/// (`unk860`) before `timeouts`, so a larger `character_size` indicates that block is present.
+const CHARACTER_BASE_SIZE: usize = 0xcd0;
 // size of both the list head and a list entry
 const LINKED_LIST_SIZE: usize = 12;
 
@@ -181,6 +183,7 @@ impl Default for CharacterTimeout {
 }
 
 #[binrw]
+#[brw(import(has_extra: bool))]
 #[derive(Debug, Clone, Zeroable)]
 pub struct Character {
     unk000: [u8; 0x350], // 000
@@ -230,22 +233,26 @@ pub struct Character {
     pub say_start_delay: i16, // 84e
     pub listener_chara_id: CharacterId, // 850
     unk854: [u8; 0xc], // 854
-    pub timeouts: [CharacterTimeout; NUM_CHARACTERS], // 860
-    flags3: u64, // 0x20 = watch enabled; b98
-    pub event_modes: u64, // flags, 1 << EVENT constant; ba0
-    unk_event_modes: u64, // ba8
-    unkbb0: u32, // bb0
-    pub ai_group_id: i32, // bb4
-    unkbb8: [u8; 8], // bb8
-    pub throw_count: i32, // bc0
-    name: [u8; 16], // bc4
-    unkbd4: u8, // bd4
-    say_dead_flag: i8, // bd5
-    unkbd6: [u8; 0x1e], // bd6
-    pub ai_mode: AiStatus, // bf4
-    unkbf8: [u8; 0xa0], // bf8
-    pub special_state: i32, // 1 = death blow, 2 = waiting; c98
-    unkc9c: [u8; 0x34], // c9c
+    // only present in the larger version (e.g. SLPM-74405); shifts everything below by 0x100
+    #[br(if(has_extra, [0u8; 0x100]))]
+    #[bw(if(has_extra))]
+    unk860: [u8; 0x100], // 860
+    pub timeouts: [CharacterTimeout; NUM_CHARACTERS], // 860 / 960 when unk860 present
+    flags3: u64, // 0x20 = watch enabled; b98 / c98
+    pub event_modes: u64, // flags, 1 << EVENT constant; ba0 / ca0
+    unk_event_modes: u64, // ba8 / ca8
+    unkbb0: u32, // bb0 / cb0
+    pub ai_group_id: i32, // bb4 / cb4
+    unkbb8: [u8; 8], // bb8 / cb8
+    pub throw_count: i32, // bc0 / cc0
+    name: [u8; 16], // bc4 / cc4
+    unkbd4: u8, // bd4 / cd4
+    say_dead_flag: i8, // bd5 / cd5
+    unkbd6: [u8; 0x1e], // bd6 / cd6
+    pub ai_mode: AiStatus, // bf4 / cf4
+    unkbf8: [u8; 0xa0], // bf8 / cf8
+    pub special_state: i32, // 1 = death blow, 2 = waiting; c98 / ca8
+    unkc9c: [u8; 0x34], // c9c / cac
 }
 
 impl Character {
@@ -305,9 +312,15 @@ pub struct GameVersion {
     game_state_address: usize,
     character_data_address: usize,
     character_list_address: usize,
+    character_size: usize,
 }
 
 impl GameVersion {
+    /// Whether this version includes the extra `unk860` block in `Character`.
+    const fn character_has_extra(&self) -> bool {
+        self.character_size > CHARACTER_BASE_SIZE
+    }
+
     pub fn matches(&self, emulator: &Emulator) -> Result<bool> {
         let fingerprint_size = FINGERPRINT_STRING.len();
         let fingerprint_data = emulator.read_memory(self.fingerprint_address, fingerprint_size)?;
@@ -331,6 +344,7 @@ const GAME_VERSIONS: [GameVersion; 2] = [
         game_state_address: 0x008c6f00,
         character_data_address: 0x00bf13e0,
         character_list_address: 0x008b5c40,
+        character_size: 0xcd0,
     },
     GameVersion {
         name: "SLPM-74405",
@@ -338,6 +352,7 @@ const GAME_VERSIONS: [GameVersion; 2] = [
         game_state_address: 0x008ecd00,
         character_data_address: 0x00c175b0,
         character_list_address: 0x008dba3c,
+        character_size: 0xdd0,
     },
 ];
 
@@ -412,14 +427,18 @@ impl Game {
         }
 
         let list_end = self.version.character_list_address as u32;
+        let character_size = self.version.character_size;
+        let has_extra = self.version.character_has_extra();
         let mut entry: LinkedListEntry = self.emulator.read(list_begin, LINKED_LIST_SIZE)?;
         for _ in 0..list_head.count {
             let char_address = entry.object as usize;
-            if !Emulator::is_address_valid(char_address, CHARACTER_SIZE) {
+            if !Emulator::is_address_valid(char_address, character_size) {
                 break;
             }
 
-            let character: Character = self.emulator.read(char_address, CHARACTER_SIZE)?;
+            let character: Character =
+                self.emulator
+                    .read_args(char_address, character_size, (has_extra,))?;
             // sanity check: the character's data pointer should be in the range of the character data
             if character.data < char_data_start || character.data >= char_data_end {
                 break;

@@ -107,8 +107,17 @@ impl Emulator {
     }
 
     pub fn read<'a, T: BinRead<Args<'a> = ()>>(&self, address: usize, size: usize) -> Result<T> {
+        self.read_args(address, size, ())
+    }
+
+    pub fn read_args<T: BinRead>(
+        &self,
+        address: usize,
+        size: usize,
+        args: T::Args<'_>,
+    ) -> Result<T> {
         let data = self.read_memory(address, size)?;
-        let value = Cursor::new(data).read_le()?;
+        let value = Cursor::new(data).read_le_args(args)?;
         Ok(value)
     }
 
@@ -131,8 +140,17 @@ impl Emulator {
         address: usize,
         value: &T,
     ) -> Result<()> {
+        self.write_args(address, value, ())
+    }
+
+    pub fn write_args<'a, T: BinWrite>(
+        &self,
+        address: usize,
+        value: &T,
+        args: T::Args<'a>,
+    ) -> Result<()> {
         let mut buf = Cursor::new(Vec::new());
-        value.write_le(&mut buf)?;
+        value.write_le_args(&mut buf, args)?;
         self.write_memory(address, &buf.into_inner())?;
         Ok(())
     }

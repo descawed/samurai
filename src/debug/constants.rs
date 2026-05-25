@@ -246,10 +246,10 @@ impl GameConstant<u32, 16> for AiStatus {
     }
 
     fn constant_name(&self) -> Option<&'static str> {
-        // some flag bit; it's masked out by GetAIChar as well
+        // this logic matches GetAIChar
         let ai_status = self.0 & 0xff7fffff;
         Some(match ai_status {
-            0 => "AI_BATTLE",
+            0 | 0x80000000 => "AI_BATTLE",
             1 => "AI_NONCOM_IDLE",
             2 => "AI_CHASE",
             3 => "AI_APPROACH",
