@@ -9,6 +9,7 @@ use std::path::Path;
 use anyhow::{anyhow, Result};
 
 pub mod cli;
+pub mod debug;
 pub mod module;
 pub mod script;
 pub mod texture;

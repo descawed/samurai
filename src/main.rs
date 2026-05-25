@@ -207,6 +207,10 @@ fn cli() -> Command {
                         .arg(arg!(<INPUT> ... "One or more input modules to pack").value_parser(clap::value_parser!(PathBuf))),
                 )
         )
+        .subcommand(
+            Command::new("debug")
+                .about("Debug the game running in PCSX2")
+        )
 }
 
 fn main() -> Result<()> {
@@ -410,6 +414,9 @@ fn main() -> Result<()> {
             }
             _ => unreachable!(),
         },
+        Some(("debug", _)) => {
+            run_debugger()?;
+        }
         _ => unreachable!(),
     }
 
