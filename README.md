@@ -217,7 +217,9 @@ Characters, and Flags. Use tab to switch between them.
 
 ### Globals
 
-The Globals panel displays various global game state variables that may be of interest.
+The Globals panel displays various global game state variables that may be of interest. The debugger keeps track of
+which events you've seen before. Events you're seeing for the first time on a particular game version will display a
+green "New" label.
 
 ### Characters
 

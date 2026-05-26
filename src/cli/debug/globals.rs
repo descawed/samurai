@@ -1,6 +1,6 @@
 use ratatui::Frame;
 use ratatui::layout::Rect;
-use ratatui::style::{Modifier, Style};
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
@@ -16,7 +16,24 @@ fn row<'a>(label: &'static str, value: String) -> Line<'a> {
     ])
 }
 
-fn build_lines(game: &Game) -> Vec<Line<'static>> {
+/// The Event row, with a green "New" marker appended when this `(phase, event)` pair hasn't been
+/// seen before for the current game version.
+fn event_row<'a>(event_id: i32, is_new: bool) -> Line<'a> {
+    let mut spans = vec![
+        Span::styled(format!("{:>10}: ", "Event"), Style::new().add_modifier(Modifier::BOLD)),
+        Span::raw(event_id.to_string()),
+    ];
+    if is_new {
+        spans.push(Span::raw("  "));
+        spans.push(Span::styled(
+            "New",
+            Style::new().fg(Color::Green).add_modifier(Modifier::BOLD),
+        ));
+    }
+    Line::from(spans)
+}
+
+fn build_lines(game: &Game, event_is_new: bool) -> Vec<Line<'static>> {
     let state = &game.game_state;
     vec![
         row("Version", game.version_name().to_string()),
@@ -25,7 +42,7 @@ fn build_lines(game: &Game) -> Vec<Line<'static>> {
             format!("{} ({})", state.difficulty.value(), state.difficulty.display_name()),
         ),
         row("Phase", state.phase_id.to_string()),
-        row("Event", state.event_id.to_string()),
+        event_row(state.event_id, event_is_new),
         row("Map", labeled_constant(state.map_id.value(), state.map_id.constant_name())),
         row("Exit", state.exit_id.to_string()),
         row(
@@ -43,8 +60,15 @@ fn build_lines(game: &Game) -> Vec<Line<'static>> {
     ]
 }
 
-pub fn render(frame: &mut Frame, area: Rect, game: &Game, scroll: &mut u16, focused: bool) {
-    let lines = build_lines(game);
+pub fn render(
+    frame: &mut Frame,
+    area: Rect,
+    game: &Game,
+    scroll: &mut u16,
+    focused: bool,
+    event_is_new: bool,
+) {
+    let lines = build_lines(game, event_is_new);
 
     // clamp the scroll offset against the content so we never scroll past the last row
     let viewport = area.height.saturating_sub(2); // account for the borders

@@ -14,9 +14,11 @@ use ratatui::{DefaultTerminal, Frame};
 use crate::debug::*;
 
 mod characters;
+mod config;
 mod flags;
 mod globals;
 
+use config::Config;
 use flags::FlagCategory;
 
 const REFRESH_INTERVAL: Duration = Duration::from_millis(3000);
@@ -86,7 +88,14 @@ impl Default for UiState {
 
 pub struct DebuggerApp {
     debugger: Debugger,
+    config: Config,
     last_refresh: Instant,
+    /// The `(version, phase, event)` last evaluated for the "New" label, used to detect when the
+    /// current event changes.
+    last_event: Option<(&'static str, i8, i32)>,
+    /// Whether the current `(phase, event)` had not been seen before for this game version. Set
+    /// when the event changes and shown next to the event ID until the next change.
+    event_is_new: bool,
     ui: UiState,
     should_quit: bool,
 }
@@ -101,10 +110,13 @@ impl DebuggerApp {
     pub fn new() -> Self {
         Self {
             debugger: Debugger::new(),
+            config: Config::load(),
             // place the last refresh in the past so the first frame loads data immediately
             last_refresh: Instant::now()
                 .checked_sub(REFRESH_INTERVAL)
                 .unwrap_or_else(Instant::now),
+            last_event: None,
+            event_is_new: false,
             ui: UiState::default(),
             should_quit: false,
         }
@@ -117,7 +129,27 @@ impl DebuggerApp {
         }
         self.debugger.update()?;
         self.last_refresh = now;
+        self.update_event_status();
         Ok(())
+    }
+
+    /// After a refresh, decide whether the current `(phase, event)` is new for the running game
+    /// version. Recording a newly-seen pair persists it to the config. The "New" label stays until
+    /// the phase or event changes.
+    fn update_event_status(&mut self) {
+        let Some((version, phase, event)) = self.debugger.game().map(|game| {
+            (game.version_name(), game.game_state.phase_id, game.game_state.event_id)
+        }) else {
+            // no game running; reset so a freshly-attached game is re-evaluated
+            self.last_event = None;
+            self.event_is_new = false;
+            return;
+        };
+
+        if self.last_event != Some((version, phase, event)) {
+            self.event_is_new = self.config.mark_event_seen(version, phase, event);
+            self.last_event = Some((version, phase, event));
+        }
     }
 
     pub fn run(&mut self, terminal: &mut DefaultTerminal) -> Result<()> {
@@ -192,7 +224,7 @@ impl DebuggerApp {
     fn draw(&mut self, frame: &mut Frame) {
         let area = frame.area();
         if let Some(game) = self.debugger.game() {
-            draw_running(frame, area, game, &mut self.ui);
+            draw_running(frame, area, game, &mut self.ui, self.event_is_new);
         } else if self.debugger.is_emulator_running() {
             let message = format!(
                 "Found PCSX2, PID: {}. Waiting for Way of the Samurai...",
@@ -205,21 +237,21 @@ impl DebuggerApp {
     }
 }
 
-fn draw_running(frame: &mut Frame, area: Rect, game: &Game, ui: &mut UiState) {
+fn draw_running(frame: &mut Frame, area: Rect, game: &Game, ui: &mut UiState, event_is_new: bool) {
     let [body, footer] =
         Layout::vertical([Constraint::Min(0), Constraint::Length(1)]).areas(area);
 
     if area.width >= MIN_WIDE_WIDTH && area.height >= MIN_WIDE_HEIGHT {
-        draw_wide(frame, body, game, ui);
+        draw_wide(frame, body, game, ui, event_is_new);
     } else {
-        draw_tabbed(frame, body, game, ui);
+        draw_tabbed(frame, body, game, ui, event_is_new);
     }
 
     frame.render_widget(footer_hint(ui.focus), footer);
 }
 
 /// All three panels at once: globals over characters on the left, flags filling the right.
-fn draw_wide(frame: &mut Frame, area: Rect, game: &Game, ui: &mut UiState) {
+fn draw_wide(frame: &mut Frame, area: Rect, game: &Game, ui: &mut UiState, event_is_new: bool) {
     let [left, right] =
         Layout::horizontal([Constraint::Min(0), Constraint::Length(FLAGS_WIDTH)]).areas(area);
     let [globals_area, characters_area] =
@@ -231,6 +263,7 @@ fn draw_wide(frame: &mut Frame, area: Rect, game: &Game, ui: &mut UiState) {
         game,
         &mut ui.globals_scroll,
         ui.focus == Focus::Globals,
+        event_is_new,
     );
     characters::render(
         frame,
@@ -252,7 +285,7 @@ fn draw_wide(frame: &mut Frame, area: Rect, game: &Game, ui: &mut UiState) {
 }
 
 /// A single panel, chosen by the focused section, under a tab bar.
-fn draw_tabbed(frame: &mut Frame, area: Rect, game: &Game, ui: &mut UiState) {
+fn draw_tabbed(frame: &mut Frame, area: Rect, game: &Game, ui: &mut UiState, event_is_new: bool) {
     let [tabs_area, panel] =
         Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).areas(area);
 
@@ -262,7 +295,9 @@ fn draw_tabbed(frame: &mut Frame, area: Rect, game: &Game, ui: &mut UiState) {
     frame.render_widget(tabs, tabs_area);
 
     match ui.focus {
-        Focus::Globals => globals::render(frame, panel, game, &mut ui.globals_scroll, true),
+        Focus::Globals => {
+            globals::render(frame, panel, game, &mut ui.globals_scroll, true, event_is_new)
+        }
         Focus::Characters => {
             characters::render(frame, panel, game, &mut ui.characters, &ui.expanded, true)
         }
