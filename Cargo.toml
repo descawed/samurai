@@ -1,6 +1,6 @@
 [package]
 name = "samurai"
-version = "0.1.0"
+version = "0.2.0"
 authors = ["descawed <samurai@descawed.com>"]
 edition = "2024"
 description = "Tools for working with the files of the game (Way of the) Samurai"
@@ -12,15 +12,29 @@ repository = "https://github.com/descawed/samurai"
 [dependencies]
 anyhow = "~1.0.102"
 binrw = "~0.15.1"
+bytemuck = { version = "1.25.0", features = ["derive", "min_const_generics"] }
 chardet = "~0.2.4"
 chumsky = "0.13.0"
 clap = "4.6.1"
 common_macros = "~0.1.1"
+crossterm = "0.29.0"
+dirs = "6"
 encoding_rs = "~0.8.35"
 image = "~0.25.10"
 itertools = "~0.14.0"
+num-traits = "0.2.19"
+object = "0.39.1"
 ordered_hash_map = "~0.6.0"
 pathdiff = "~0.2.3"
+ratatui = "0.30.0"
 regex = "~1.12.3"
+serde = { version = "1.0", features = ["derive"] }
 walkdir = "~2.5.0"
 strum = { version = "~0.28.0", features = ["derive"] }
+sysinfo = "0.39.2"
+thiserror = "2.0.18"
+toml = "0.9"
+
+[profile.release]
+lto = true
+strip = true

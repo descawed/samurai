@@ -1,3 +1,6 @@
+pub mod debug;
+pub use debug::*;
+
 pub mod module;
 pub use module::*;
 

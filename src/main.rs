@@ -2,7 +2,7 @@ use std::path::PathBuf;
 use std::str::FromStr;
 
 use anyhow::Result;
-use clap::{arg, Command};
+use clap::{Command, arg};
 
 use samurai::cli::*;
 use samurai::module::DEFAULT_ALIGNMENT;
@@ -207,6 +207,10 @@ fn cli() -> Command {
                         .arg(arg!(<INPUT> ... "One or more input modules to pack").value_parser(clap::value_parser!(PathBuf))),
                 )
         )
+        .subcommand(
+            Command::new("debug")
+                .about("Debug the game running in PCSX2")
+        )
 }
 
 fn main() -> Result<()> {
@@ -218,11 +222,11 @@ fn main() -> Result<()> {
                 let archive_path = unpack_matches
                     .get_one::<PathBuf>("ARCHIVE")
                     .expect("Path to MODULE.BIN archive is required");
-                
+
                 let extract_path = unpack_matches
                     .get_one::<PathBuf>("OUTPUT")
                     .expect("Path to extraction directory is required");
-                
+
                 unpack_modules(archive_path, extract_path)?;
             }
             Some(("pack", pack_matches)) => {
@@ -230,15 +234,15 @@ fn main() -> Result<()> {
                     .get_one::<u32>("alignment")
                     .copied()
                     .unwrap_or(DEFAULT_ALIGNMENT);
-                
+
                 let archive_path = pack_matches
                     .get_one::<PathBuf>("ARCHIVE")
                     .expect("Path to MODULE.BIN archive is required");
-                
+
                 let input_paths = pack_matches
                     .get_many::<PathBuf>("INPUT")
                     .expect("At least one input module is required");
-                
+
                 pack_modules(archive_path, alignment, input_paths)?;
             }
             _ => unreachable!(),
@@ -410,6 +414,9 @@ fn main() -> Result<()> {
             }
             _ => unreachable!(),
         },
+        Some(("debug", _)) => {
+            run_debugger()?;
+        }
         _ => unreachable!(),
     }
 

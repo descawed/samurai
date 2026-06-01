@@ -2,8 +2,8 @@ use std::path::Path;
 
 use anyhow::anyhow;
 
-use crate::texture::{PictureImageFile, StackDirection};
 use crate::Readable;
+use crate::texture::{PictureImageFile, StackDirection};
 
 pub fn list_texture(path: &Path) -> anyhow::Result<()> {
     let images = PictureImageFile::load(path)?;
@@ -25,9 +25,9 @@ pub fn export_texture(
     let images = PictureImageFile::load(texture_path)?.object;
     let is_single_image = images.num_variants() == 1
         || (indexes.len() == 1
-        && (cluts.len() == 1
-        || stack_direction.is_some()
-        || images.get(indexes[0]).is_none_or(|i| i.num_cluts() <= 1)));
+            && (cluts.len() == 1
+                || stack_direction.is_some()
+                || images.get(indexes[0]).is_none_or(|i| i.num_cluts() <= 1)));
 
     if !is_single_image && output_path.exists() && !output_path.is_dir() {
         return Err(anyhow!(

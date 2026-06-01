@@ -1,15 +1,15 @@
-use std::path::{Path, PathBuf};
-use std::{fs, process};
 use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::io::BufWriter;
+use std::path::{Path, PathBuf};
+use std::{fs, process};
 
 use anyhow::anyhow;
 use strum::EnumString;
 use walkdir::WalkDir;
 
-use crate::volume::{hash_name, Volume};
 use crate::Readable;
+use crate::volume::{Volume, hash_name};
 
 #[derive(Clone, Copy, Debug, EnumString)]
 pub enum UnorderedBehavior {
@@ -90,7 +90,9 @@ pub fn unpack_volume<S: AsRef<str>>(
         let mut output_path = extract_path.to_path_buf();
         output_path.push(name.replace('\\', "/"));
 
-        if let Some(parent) = output_path.parent() && !parent.exists() {
+        if let Some(parent) = output_path.parent()
+            && !parent.exists()
+        {
             fs::create_dir_all(parent)?;
         }
 
@@ -171,7 +173,7 @@ pub fn pack_volume<T: AsRef<Path>, I: Iterator<Item = T>>(
                     match (indexes.get(&name), unordered_behavior) {
                         (Some(new_index), _) => *new_index,
                         (None, UnorderedBehavior::Fail) => {
-                            return Err(anyhow!("{} not found in order file", name))
+                            return Err(anyhow!("{} not found in order file", name));
                         }
                         (None, UnorderedBehavior::Ignore) => {
                             new_paths.pop();

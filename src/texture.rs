@@ -5,9 +5,9 @@ use std::io::{Read, Seek, SeekFrom};
 use std::ops::Index;
 
 use crate::{Readable, Validated};
-use anyhow::{anyhow, Result};
-use binrw::{binrw, BinRead};
-use image::{imageops, DynamicImage, RgbaImage};
+use anyhow::{Result, anyhow};
+use binrw::{BinRead, binrw};
+use image::{DynamicImage, RgbaImage, imageops};
 
 /// Width of a PSMCT32 column in pixels
 const PSMCT32_COLUMN_WIDTH: usize = 8;
@@ -168,19 +168,24 @@ fn unswizzle<T: Into<usize> + Copy>(
         let column_index = (output_pixel_y % block_height) / column_height;
         let output_pixel_x_in_column = output_pixel_x % column_width;
         let output_pixel_y_in_column = output_pixel_y % column_height;
-        let output_pixel_index_in_column = output_pixel_y_in_column * column_width + output_pixel_x_in_column;
-        let input_pixel_index_in_column = format.psmt_map(output_pixel_index_in_column, column_index);
-        let input_pixel_x_in_column = input_pixel_index_in_column % (PSMCT32_COLUMN_WIDTH * pixels_per_word);
-        let input_pixel_y_in_column = input_pixel_index_in_column / (PSMCT32_COLUMN_WIDTH * pixels_per_word);
+        let output_pixel_index_in_column =
+            output_pixel_y_in_column * column_width + output_pixel_x_in_column;
+        let input_pixel_index_in_column =
+            format.psmt_map(output_pixel_index_in_column, column_index);
+        let input_pixel_x_in_column =
+            input_pixel_index_in_column % (PSMCT32_COLUMN_WIDTH * pixels_per_word);
+        let input_pixel_y_in_column =
+            input_pixel_index_in_column / (PSMCT32_COLUMN_WIDTH * pixels_per_word);
 
         // 5. Final flat index into the source data, addressed as a 2-D row-major buffer of the
         //    underlying width.
-        let input_pixel_index =
-            src_page_y * PSMCT32_PAGE_HEIGHT * buf_width_in_indexes + src_page_x * PSMCT32_PAGE_WIDTH * pixels_per_word
-            + src_block_y * PSMCT32_BLOCK_HEIGHT * buf_width_in_indexes + src_block_x * PSMCT32_BLOCK_WIDTH * pixels_per_word
+        let input_pixel_index = src_page_y * PSMCT32_PAGE_HEIGHT * buf_width_in_indexes
+            + src_page_x * PSMCT32_PAGE_WIDTH * pixels_per_word
+            + src_block_y * PSMCT32_BLOCK_HEIGHT * buf_width_in_indexes
+            + src_block_x * PSMCT32_BLOCK_WIDTH * pixels_per_word
             + column_index * PSMCT32_COLUMN_HEIGHT * buf_width_in_indexes
-            + input_pixel_y_in_column * buf_width_in_indexes + input_pixel_x_in_column
-            ;
+            + input_pixel_y_in_column * buf_width_in_indexes
+            + input_pixel_x_in_column;
 
         // For mixed-mode images the texture's nominal dimensions can extend past the end of the
         // shared buffer; treat out-of-range reads as transparent (index 0) rather than erroring.
@@ -238,30 +243,54 @@ impl PixelStorageMode {
     /// Page size in pixels (width, height)
     pub const fn page_size(&self) -> (usize, usize) {
         match self {
-            PixelStorageMode::PSMCT32 | PixelStorageMode::PSMCT24 | PixelStorageMode::PSMZ32 | PixelStorageMode::PSMZ24 => (64, 32),
-            PixelStorageMode::PSMCT16 | PixelStorageMode::PSMCT16S | PixelStorageMode::PSMZ16 | PixelStorageMode::PSMZ16S => (64, 64),
+            PixelStorageMode::PSMCT32
+            | PixelStorageMode::PSMCT24
+            | PixelStorageMode::PSMZ32
+            | PixelStorageMode::PSMZ24 => (64, 32),
+            PixelStorageMode::PSMCT16
+            | PixelStorageMode::PSMCT16S
+            | PixelStorageMode::PSMZ16
+            | PixelStorageMode::PSMZ16S => (64, 64),
             PixelStorageMode::PSMT8H | PixelStorageMode::PSMT8 => (128, 64),
-            PixelStorageMode::PSMT4HL | PixelStorageMode::PSMT4HH | PixelStorageMode::PSMT4 => (128, 128),
+            PixelStorageMode::PSMT4HL | PixelStorageMode::PSMT4HH | PixelStorageMode::PSMT4 => {
+                (128, 128)
+            }
         }
     }
 
     /// Block size in pixels (width, height)
     pub const fn block_size(&self) -> (usize, usize) {
         match self {
-            PixelStorageMode::PSMCT32 | PixelStorageMode::PSMCT24 | PixelStorageMode::PSMZ32 | PixelStorageMode::PSMZ24 => (8, 8),
-            PixelStorageMode::PSMCT16 | PixelStorageMode::PSMCT16S | PixelStorageMode::PSMZ16 | PixelStorageMode::PSMZ16S => (16, 8),
+            PixelStorageMode::PSMCT32
+            | PixelStorageMode::PSMCT24
+            | PixelStorageMode::PSMZ32
+            | PixelStorageMode::PSMZ24 => (8, 8),
+            PixelStorageMode::PSMCT16
+            | PixelStorageMode::PSMCT16S
+            | PixelStorageMode::PSMZ16
+            | PixelStorageMode::PSMZ16S => (16, 8),
             PixelStorageMode::PSMT8H | PixelStorageMode::PSMT8 => (16, 16),
-            PixelStorageMode::PSMT4HL | PixelStorageMode::PSMT4HH | PixelStorageMode::PSMT4 => (32, 16),
+            PixelStorageMode::PSMT4HL | PixelStorageMode::PSMT4HH | PixelStorageMode::PSMT4 => {
+                (32, 16)
+            }
         }
     }
 
     /// Column size in pixels (width, height)
     pub const fn column_size(&self) -> (usize, usize) {
         match self {
-            PixelStorageMode::PSMCT32 | PixelStorageMode::PSMCT24 | PixelStorageMode::PSMZ32 | PixelStorageMode::PSMZ24 => (8, 2),
-            PixelStorageMode::PSMCT16 | PixelStorageMode::PSMCT16S | PixelStorageMode::PSMZ16 | PixelStorageMode::PSMZ16S => (16, 2),
+            PixelStorageMode::PSMCT32
+            | PixelStorageMode::PSMCT24
+            | PixelStorageMode::PSMZ32
+            | PixelStorageMode::PSMZ24 => (8, 2),
+            PixelStorageMode::PSMCT16
+            | PixelStorageMode::PSMCT16S
+            | PixelStorageMode::PSMZ16
+            | PixelStorageMode::PSMZ16S => (16, 2),
             PixelStorageMode::PSMT8H | PixelStorageMode::PSMT8 => (16, 4),
-            PixelStorageMode::PSMT4HL | PixelStorageMode::PSMT4HH | PixelStorageMode::PSMT4 => (32, 4),
+            PixelStorageMode::PSMT4HL | PixelStorageMode::PSMT4HH | PixelStorageMode::PSMT4 => {
+                (32, 4)
+            }
         }
     }
 
@@ -270,28 +299,30 @@ impl PixelStorageMode {
         // odd rows use an altered mapping where each group of 4 is swapped with its neighbor
         let i = i ^ ((column_index & 1) * 4);
         match self {
-            PixelStorageMode::PSMCT32 | PixelStorageMode::PSMCT24 | PixelStorageMode::PSMZ32 | PixelStorageMode::PSMZ24 => psmt_map::<8, 2>(i),
-            PixelStorageMode::PSMCT16 | PixelStorageMode::PSMCT16S | PixelStorageMode::PSMZ16 | PixelStorageMode::PSMZ16S => psmt_map::<16, 2>(i),
+            PixelStorageMode::PSMCT32
+            | PixelStorageMode::PSMCT24
+            | PixelStorageMode::PSMZ32
+            | PixelStorageMode::PSMZ24 => psmt_map::<8, 2>(i),
+            PixelStorageMode::PSMCT16
+            | PixelStorageMode::PSMCT16S
+            | PixelStorageMode::PSMZ16
+            | PixelStorageMode::PSMZ16S => psmt_map::<16, 2>(i),
             PixelStorageMode::PSMT8H | PixelStorageMode::PSMT8 => psmt_map::<16, 4>(i),
-            PixelStorageMode::PSMT4HL | PixelStorageMode::PSMT4HH | PixelStorageMode::PSMT4 => psmt_map::<32, 4>(i),
+            PixelStorageMode::PSMT4HL | PixelStorageMode::PSMT4HH | PixelStorageMode::PSMT4 => {
+                psmt_map::<32, 4>(i)
+            }
         }
     }
 
     pub const fn psmct32_block_transform(&self) -> [usize; 32] {
         match self {
             PixelStorageMode::PSMT4HL | PixelStorageMode::PSMT4HH | PixelStorageMode::PSMT4 => [
-                0,  8, 16, 24,
-                1,  9, 17, 25,
-                2, 10, 18, 26,
-                3, 11, 19, 27,
-                4, 12, 20, 28,
-                5, 13, 21, 29,
-                6, 14, 22, 30,
-                7, 15, 23, 31,
+                0, 8, 16, 24, 1, 9, 17, 25, 2, 10, 18, 26, 3, 11, 19, 27, 4, 12, 20, 28, 5, 13, 21,
+                29, 6, 14, 22, 30, 7, 15, 23, 31,
             ],
             _ => [
-                0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15,
-                16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31,
+                0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22,
+                23, 24, 25, 26, 27, 28, 29, 30, 31,
             ],
         }
     }
@@ -355,8 +386,14 @@ impl PixelStorageMode {
 
     pub const fn num_pixels_per_word(&self) -> usize {
         match self {
-            PixelStorageMode::PSMCT32 | PixelStorageMode::PSMCT24 | PixelStorageMode::PSMZ32 | PixelStorageMode::PSMZ24 => 1,
-            PixelStorageMode::PSMCT16 | PixelStorageMode::PSMCT16S | PixelStorageMode::PSMZ16 | PixelStorageMode::PSMZ16S => 2,
+            PixelStorageMode::PSMCT32
+            | PixelStorageMode::PSMCT24
+            | PixelStorageMode::PSMZ32
+            | PixelStorageMode::PSMZ24 => 1,
+            PixelStorageMode::PSMCT16
+            | PixelStorageMode::PSMCT16S
+            | PixelStorageMode::PSMZ16
+            | PixelStorageMode::PSMZ16S => 2,
             PixelStorageMode::PSMT8H | PixelStorageMode::PSMT8 => 4,
             PixelStorageMode::PSMT4HL | PixelStorageMode::PSMT4HH | PixelStorageMode::PSMT4 => 8,
         }
@@ -402,17 +439,39 @@ impl PixelStorageMode {
         }
     }
 
-    pub fn read_indexes(&self, data: &[u8], tex_packed_width: usize, buf_packed_width: usize, tbp_blocks: usize, output_width: usize, output_height: usize) -> Result<Vec<usize>> {
+    pub fn read_indexes(
+        &self,
+        data: &[u8],
+        tex_packed_width: usize,
+        buf_packed_width: usize,
+        tbp_blocks: usize,
+        output_width: usize,
+        output_height: usize,
+    ) -> Result<Vec<usize>> {
         match self {
-            PixelStorageMode::PSMT8 | PixelStorageMode::PSMT8H => {
-                Ok(unswizzle(data, tex_packed_width, buf_packed_width, tbp_blocks, output_width, output_height, *self))
-            }
+            PixelStorageMode::PSMT8 | PixelStorageMode::PSMT8H => Ok(unswizzle(
+                data,
+                tex_packed_width,
+                buf_packed_width,
+                tbp_blocks,
+                output_width,
+                output_height,
+                *self,
+            )),
             PixelStorageMode::PSMT4 => {
                 let indexes: Vec<_> = data
                     .iter()
                     .flat_map(|b| [(*b & 0xf) as usize, (*b >> 4) as usize])
                     .collect();
-                Ok(unswizzle(&indexes, tex_packed_width, buf_packed_width, tbp_blocks, output_width, output_height, *self))
+                Ok(unswizzle(
+                    &indexes,
+                    tex_packed_width,
+                    buf_packed_width,
+                    tbp_blocks,
+                    output_width,
+                    output_height,
+                    *self,
+                ))
             }
             PixelStorageMode::PSMT4HL | PixelStorageMode::PSMT4HH => Ok(data
                 .iter()
@@ -662,7 +721,8 @@ impl PictureImage {
                 self.descriptor.pixel_width() as u32,
                 self.descriptor.pixel_height() as u32,
                 pixels.into_owned(),
-            ).unwrap(),
+            )
+            .unwrap(),
         )
     }
 
@@ -747,7 +807,11 @@ impl Readable for PictureImageFile {
         for descriptor in descriptors {
             let (image, buf_packed_width, tbp_blocks) =
                 if descriptor.image_block_length == 0 && descriptor.image_block_offset == 0 {
-                    (prev_image, prev_packed_width, descriptor.tbp_blocks as usize)
+                    (
+                        prev_image,
+                        prev_packed_width,
+                        descriptor.tbp_blocks as usize,
+                    )
                 } else {
                     let mut image = vec![0u8; descriptor.image_block_length as usize];
                     source.seek(SeekFrom::Start(descriptor.image_block_offset as u64))?;

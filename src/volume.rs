@@ -1,8 +1,8 @@
 use std::collections::HashMap;
 use std::io::{Read, Seek, SeekFrom, Write};
 
-use anyhow::{anyhow, Result};
-use binrw::{binrw, BinRead, BinWrite, BinWriterExt, NullString};
+use anyhow::{Result, anyhow};
+use binrw::{BinRead, BinWrite, BinWriterExt, NullString, binrw};
 use ordered_hash_map::OrderedHashMap;
 
 use super::{Readable, Validated};
