@@ -193,7 +193,7 @@ pub struct Character {
     unk38c: [u8; 0x36], // 38c
     flags: u16, // 0x4 = invincible, 0x20 = pos fix mode; 3c2
     pub animation_id: Animation, // ID in the low 12 bits, flags in the high bits; 3c4
-    flags2: u32, // 0x2 = stop, 0x400 = has target character, 0x40000 = dead, 0x4000000 = hi face mode; 3c8
+    flags2: u32, // 0x2 = stop, 0x4 = blocking, 0x400 = has target character, 0x40000 = dead, 0x4000000 = hi face mode; 3c8
     unk3cc: u32, // 3cc
     pub base_max_health: i32, // 3d0
     unk3d4: [u8; 0x13c], // 3d4
@@ -266,6 +266,10 @@ impl Character {
 
     pub const fn is_stopped(&self) -> bool {
         self.flags2 & 0x2 != 0
+    }
+
+    pub const fn is_blocking(&self) -> bool {
+        self.flags2 & 0x4 != 0
     }
 
     pub const fn has_target_character(&self) -> bool {
