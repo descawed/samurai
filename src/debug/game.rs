@@ -41,7 +41,10 @@ pub enum EngineMode {
 #[derive(Debug, Clone, Zeroable)]
 pub struct Engine {
     mode: i32,
-    unk004: [u8; 0x24],
+    unk004: [u8; 0x20],
+    // counts frames since the game started. runs all the time except during boot, movie playback,
+    // and ending slides
+    pub frame_counter: u32,
     player: u32,
     unk02c: [u8; 0x10],
     #[br(if(has_extra, 0))]
@@ -700,6 +703,16 @@ impl Game {
         }
 
         Ok(())
+    }
+
+    /// Read a single character's [`CharacterData`] directly from emulator memory, identified by its
+    /// index (a `CHID_` value) in the character data array. Unlike [`update_with`](Self::update_with),
+    /// this reads just the one record on demand, which is useful for consumers running with
+    /// `skip_characters` that still need a specific character (e.g. the autosplitter watching the
+    /// final boss's health).
+    pub fn read_character_data(&self, id: usize) -> Result<CharacterData> {
+        let address = self.version.character_data_address + id * CHARACTER_DATA_SIZE;
+        self.emulator.read(address, CHARACTER_DATA_SIZE)
     }
 
     pub fn iter_characters(&self) -> impl Iterator<Item = (&Character, &CharacterData)> {

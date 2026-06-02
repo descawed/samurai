@@ -42,7 +42,29 @@ impl Route {
 }
 
 /// All known routes.
-static ROUTES: &[Route] = &[];
+static ROUTES: &[Route] = &[
+    Route {
+        category: Category {
+            ending: 3,
+            new_game_plus: false,
+        },
+        events: &[
+            (1, 26),
+            (1, 29),
+            (1, 3),
+            (2, 17),
+            (2, 2),
+            (3, 3),
+            (3, 2),
+            (4, 4),
+            (4, 2),
+            (4, 19),
+            (5, 2),
+            (5, 25),
+            (5, 26),
+        ],
+    },
+];
 
 /// Look up the route for a given category if one is defined.
 pub fn route_for(category: Category) -> Option<&'static Route> {

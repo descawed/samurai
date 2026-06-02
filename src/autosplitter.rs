@@ -29,6 +29,21 @@ const NEW_GAME_VARIABLE_NAME: &str = "SamuraiNewGame";
 /// frequency this is roughly five seconds.
 const CATEGORY_SYNC_PERIOD: i32 = 334;
 
+/// Character ID of the final boss
+const CHID_TAMAGAWA: usize = 16;
+
+/// How many frames to wait after the final boss's health reaches 0 before splitting to end the run.
+///
+/// This is necessary because the leaderboard rules state that the timer ends when the UI disappears
+/// for the Tamagawa death scene, but this doesn't happen until a few frames after his health
+/// reaches 0. I considered watching for the flag that hides the UI, but the original JP release of
+/// the game actually _doesn't_ hide the UI, so that wouldn't work for that version. I instead
+/// looked into identifying the frame that the camera angle switches to Tamagawa, but I was
+/// unsuccessful - there's a 2-frame delay between Tamagawa being set as the camera target and the
+/// camera actually switching to him, and I wasn't able to find what triggers the switch.
+/// Ultimately, checking his health with a delay seemed like the most straightforward approach.
+const BOSS_DEATH_SPLIT_DELAY_FRAMES: u32 = 4;
+
 /// A simple down-counter used to throttle periodic work (re-reading the category from LiveSplit)
 /// rather than doing it on every poll.
 #[derive(Debug, Clone)]
@@ -147,6 +162,9 @@ pub struct SamuraiGame {
     route: Option<&'static Route>,
     /// The last `(phase ID, event ID)` we observed, used to detect event transitions.
     last_event: Option<(i8, i32)>,
+    /// The engine frame counter when the final boss's health first reached 0, used to delay the
+    /// run-ending split. `None` until the boss is defeated (or after a reset).
+    boss_defeated_frame: Option<u32>,
     /// Throttles re-reading the category variables from LiveSplit.
     category_sync: PeriodicCheck,
 }
@@ -161,6 +179,7 @@ impl SamuraiGame {
             category: None,
             route: None,
             last_event: None,
+            boss_defeated_frame: None,
             category_sync: PeriodicCheck::new(CATEGORY_SYNC_PERIOD),
         }
     }
@@ -205,6 +224,46 @@ impl SamuraiGame {
                     "Run category could not be determined; splitting on every event change"
                 );
             }
+        }
+
+        Ok(())
+    }
+
+    /// Watch the final boss's health and split to end the run once he's been dead for
+    /// [`BOSS_DEATH_SPLIT_DELAY_FRAMES`] frames. Called each poll while the run is in its final
+    /// stretch. A failed read is treated as "not defeated yet"; if the game has really gone away, the
+    /// next [`update`](Debugger::update) will catch it.
+    fn check_boss_defeated(&mut self, live_split: &mut LiveSplit, frame_counter: u32) -> Result<()> {
+        let boss = match self.debugger.read_character_data(CHID_TAMAGAWA) {
+            Ok(Some(boss)) => boss,
+            Ok(None) => return Ok(()),
+            Err(e) => {
+                log::debug!("Failed to read final boss data: {e}");
+                return Ok(());
+            }
+        };
+
+        if boss.health > 0 {
+            // boss still alive; reset any pending kill so we require a fresh death
+            self.boss_defeated_frame = None;
+            return Ok(());
+        }
+
+        let defeated_frame = match self.boss_defeated_frame {
+            Some(frame) => frame,
+            None => {
+                log::debug!(
+                    "Final boss defeated at frame {frame_counter}; ending run in \
+                     {BOSS_DEATH_SPLIT_DELAY_FRAMES} frames"
+                );
+                self.boss_defeated_frame = Some(frame_counter);
+                frame_counter
+            }
+        };
+
+        if frame_counter.wrapping_sub(defeated_frame) >= BOSS_DEATH_SPLIT_DELAY_FRAMES {
+            log::info!("Run complete!");
+            live_split.split()?;
         }
 
         Ok(())
@@ -255,9 +314,14 @@ impl LssGame for SamuraiGame {
         };
 
         let current = (game.game_state.phase_id, game.game_state.event_id);
+        // capture the values the boss-detection logic needs so we can stop borrowing `game` (which
+        // borrows the debugger) before taking `&mut self` in check_boss_defeated
+        let engine_mode = game.engine.mode();
+        let frame_counter = game.engine.frame_counter;
 
         match live_split.get_timer_phase()? {
             TimerPhase::NotRunning => {
+                self.boss_defeated_frame = None;
                 if is_new_game_start(game) {
                     log::info!("New game started; starting timer");
                     live_split.split()?;
@@ -265,25 +329,41 @@ impl LssGame for SamuraiGame {
             }
             TimerPhase::Running | TimerPhase::Paused => {
                 if !is_valid_run_mode(game) {
-                    log::info!("Left a valid run state ({:?}); resetting", game.engine.mode());
+                    log::info!("Left a valid run state ({engine_mode:?}); resetting");
                     live_split.reset()?;
-                } else if Some(current) != self.last_event {
-                    // we only act on the transition into a new (phase, event)
-                    let should_split = match self.route {
-                        Some(route) => {
-                            let index = live_split.get_split_index()?;
-                            usize::try_from(index)
-                                .ok()
-                                .and_then(|i| route.events().get(i))
-                                .is_some_and(|next| *next == current)
-                        }
-                        // with no route, split on every event change
-                        None => true,
-                    };
+                    self.boss_defeated_frame = None;
+                } else {
+                    if Some(current) != self.last_event {
+                        // we only act on the transition into a new (phase, event)
+                        let should_split = match self.route {
+                            Some(route) => {
+                                let index = live_split.get_split_index()?;
+                                usize::try_from(index)
+                                    .ok()
+                                    .and_then(|i| route.events().get(i))
+                                    .is_some_and(|next| *next == current)
+                            }
+                            // with no route, split on every event change
+                            None => true,
+                        };
 
-                    if should_split {
-                        log::debug!("Split (phase {}, event {})", current.0, current.1);
-                        live_split.split()?;
+                        if should_split {
+                            log::debug!("Split (phase {}, event {})", current.0, current.1);
+                            live_split.split()?;
+                        }
+                    }
+
+                    // once we reach the final stretch of the run, watch the boss's health so we can
+                    // split when he's defeated. that's the last route event, or phase 5 if we have
+                    // no route to tell us which event the boss fight is.
+                    let at_final_boss = engine_mode == EngineMode::InGame
+                        && match self.route {
+                            Some(route) => route.events().last() == Some(&current),
+                            None => current.0 == 5,
+                        };
+                    if at_final_boss {
+                        // TODO: implement logic for ending 6
+                        self.check_boss_defeated(live_split, frame_counter)?;
                     }
                 }
             }

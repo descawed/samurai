@@ -134,4 +134,15 @@ impl Debugger {
             _ => None,
         }
     }
+
+    /// Read a single character's [`CharacterData`] on demand, identified by its index (a `CHID_`
+    /// value) in the character data array. Returns `None` if no game is currently running. This
+    /// works even when the debugger is configured to skip character data on update; see
+    /// [`Game::read_character_data`].
+    pub fn read_character_data(&self, id: usize) -> Result<Option<CharacterData>> {
+        match &self.state {
+            State::GameRunning(game) => game.read_character_data(id).map(Some),
+            _ => Ok(None),
+        }
+    }
 }
