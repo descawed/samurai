@@ -8,6 +8,7 @@ use std::path::Path;
 
 use anyhow::{Result, anyhow};
 
+pub mod autosplitter;
 pub mod cli;
 pub mod debug;
 pub mod module;

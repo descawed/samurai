@@ -43,13 +43,23 @@ impl Default for State {
 pub struct Debugger {
     platform: RefCell<Platform>,
     state: State,
+    /// When set, `update` skips reading the (large) character data, saving time for consumers that
+    /// don't need it (e.g. the autosplitter).
+    skip_characters: bool,
 }
 
 impl Debugger {
     pub fn new() -> Self {
+        Self::with_options(false)
+    }
+
+    /// Create a debugger, optionally skipping the character data when updating. See
+    /// [`Game::update_with`].
+    pub fn with_options(skip_characters: bool) -> Self {
         Self {
             platform: RefCell::new(Platform::new(PROCESS_REFRESH_INTERVAL)),
             state: State::WaitingForEmulator,
+            skip_characters,
         }
     }
 
@@ -71,7 +81,7 @@ impl Debugger {
     }
 
     fn update_game(&self, mut game: Game) -> Result<State> {
-        let update_result = game.update();
+        let update_result = game.update_with(self.skip_characters);
         Ok(match update_result {
             Ok(()) => State::GameRunning(game),
             Err(DebugError::GameLost) => State::WaitingForGame(game.detach()),

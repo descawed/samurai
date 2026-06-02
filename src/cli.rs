@@ -1,3 +1,6 @@
+pub mod autosplitter;
+pub use autosplitter::*;
+
 pub mod debug;
 pub use debug::*;
 

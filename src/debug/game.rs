@@ -30,6 +30,8 @@ pub enum EngineMode {
     InGame,
     Loading,
     BattleMode,
+    SaveCheckpoint,
+    PhaseChange,
     MainMenu,
     Unknown(i32),
 }
@@ -53,6 +55,8 @@ impl Engine {
             1 => EngineMode::InGame,
             2 => EngineMode::Loading,
             3 => EngineMode::BattleMode,
+            4 => EngineMode::SaveCheckpoint,
+            5 => EngineMode::PhaseChange,
             7 => EngineMode::MainMenu,
             _ => EngineMode::Unknown(self.mode),
         }
@@ -576,7 +580,25 @@ impl Game {
         self.version.name
     }
 
+    fn read_main_menu(&mut self) -> Result<()> {
+        let main_menu_ptr: u32 = self.emulator.read(self.version.main_menu_address(), 4)?;
+        self.main_menu = self.emulator.read(main_menu_ptr as usize, MAIN_MENU_SIZE)?;
+        if self.main_menu.menu_mode() == MenuMode::NewGameCharacterMenu {
+            self.new_game_character_menu = self
+                .emulator
+                .read(self.main_menu.new_game_character_menu as usize, NEW_GAME_CHARACTER_MENU_SIZE)?;
+        }
+        Ok(())
+    }
+
     pub fn update(&mut self) -> Result<()> {
+        self.update_with(false)
+    }
+
+    /// Update the cached game state. When `skip_characters` is set, the (large) character data
+    /// table and the in-scene character list are not read, which saves a significant amount of time
+    /// for consumers that only care about engine, menu, and game state (e.g. the autosplitter).
+    pub fn update_with(&mut self, skip_characters: bool) -> Result<()> {
         // first, verify the emulator is still running the same game version
         if !self.version.matches(&self.emulator)? {
             // if not, see if we're running a different known version
@@ -597,6 +619,16 @@ impl Game {
         self.game_state = self
             .emulator
             .read(self.version.game_state_address, GAME_STATE_SIZE)?;
+
+        if skip_characters {
+            // the autosplitter still needs menu data, but never touches character data
+            self.characters.clear();
+            if self.engine.mode() == EngineMode::MainMenu {
+                self.read_main_menu()?;
+            }
+            return Ok(());
+        }
+
         self.character_data = self.emulator.read(
             self.version.character_data_address,
             CHARACTER_DATA_SIZE * NUM_CHARACTERS,
@@ -605,14 +637,7 @@ impl Game {
         match self.engine.mode() {
             EngineMode::MainMenu => {
                 self.characters.clear();
-
-                let main_menu_ptr: u32 = self.emulator.read(self.version.main_menu_address(), 4)?;
-                self.main_menu = self.emulator.read(main_menu_ptr as usize, MAIN_MENU_SIZE)?;
-                if self.main_menu.menu_mode() == MenuMode::NewGameCharacterMenu {
-                    self.new_game_character_menu = self
-                        .emulator
-                        .read(self.main_menu.new_game_character_menu as usize, NEW_GAME_CHARACTER_MENU_SIZE)?;
-                }
+                self.read_main_menu()?;
             }
             // battle mode does not use the same character list as in-game; need to figure out
             // where those characters are stored
