@@ -16,8 +16,176 @@ const CHARACTER_DATA_SIZE: usize = 0x200;
 /// Size of a `Character` in the original release. Later versions insert an extra 0x100-byte block
 /// (`unk860`) before `timeouts`, so a larger `character_size` indicates that block is present.
 const CHARACTER_BASE_SIZE: usize = 0xcd0;
+const ENGINE_BASE_SIZE: usize = 0x44;
+/// offset from the engine address to the main menu pointer
+const MAIN_MENU_OFFSET: usize = 0x28980;
+const MAIN_MENU_SIZE: usize = 0x68;
+const NEW_GAME_CHARACTER_MENU_SIZE: usize = 0x74;
 // size of both the list head and a list entry
 const LINKED_LIST_SIZE: usize = 12;
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum EngineMode {
+    Booting,
+    InGame,
+    Loading,
+    BattleMode,
+    MainMenu,
+    Unknown(i32),
+}
+
+#[binrw]
+#[brw(import(has_extra: bool))]
+#[derive(Debug, Clone, Zeroable)]
+pub struct Engine {
+    mode: i32,
+    unk004: [u8; 0x38],
+    #[br(if(has_extra, 0))]
+    #[bw(if(has_extra))]
+    unk03c: u32,
+    character_list: u32,
+}
+
+impl Engine {
+    pub const fn mode(&self) -> EngineMode {
+        match self.mode {
+            0 => EngineMode::Booting,
+            1 => EngineMode::InGame,
+            2 => EngineMode::Loading,
+            3 => EngineMode::BattleMode,
+            7 => EngineMode::MainMenu,
+            _ => EngineMode::Unknown(self.mode),
+        }
+    }
+}
+
+impl Default for Engine {
+    fn default() -> Self {
+        Self::zeroed()
+    }
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum MenuMode {
+    LoadSaveData(i32),
+    TrailerMovie,
+    TitleMenu,
+    TutorialMenu,
+    OptionsMenu,
+    RecordMenu,
+    OverwriteSaveData,
+    NewGameCharacterMenu,
+    LoadPlayer2Save,
+    BattleModeMenu,
+    ResultsScreen(i32),
+    SaveGame,
+    ContinueFromSave,
+    SpecialMoviesMenu,
+    Unknown(i32),
+}
+
+#[binrw]
+#[derive(Debug, Clone, Zeroable)]
+pub struct MainMenu {
+    menu_mode: i32,
+    unk04: [u8; 0x44],
+    new_game_character_menu: u32,
+    battle_mode_menu: u32,
+    options_menu: u32,
+    memory_card_menu: u32,
+    results_screen: u32,
+    title_menu: u32,
+    tutorial_menu: u32,
+    record_menu: u32,
+    // Kanzenban additionally has the special movies menu, but for simplicity we won't bother
+    // including that right now
+}
+
+impl MainMenu {
+    pub const fn menu_mode(&self) -> MenuMode {
+        match self.menu_mode {
+            0 | 1 | 2 => MenuMode::LoadSaveData(self.menu_mode),
+            3 => MenuMode::TrailerMovie,
+            4 => MenuMode::TitleMenu,
+            5 => MenuMode::TutorialMenu,
+            6 => MenuMode::OptionsMenu,
+            7 => MenuMode::RecordMenu,
+            8 => MenuMode::OverwriteSaveData,
+            9 => MenuMode::NewGameCharacterMenu,
+            10 => MenuMode::LoadPlayer2Save,
+            11 => MenuMode::BattleModeMenu,
+            12 | 13 => MenuMode::ResultsScreen(self.menu_mode),
+            14 => MenuMode::SaveGame,
+            15 => MenuMode::ContinueFromSave,
+            _ => MenuMode::Unknown(self.menu_mode),
+        }
+    }
+}
+
+impl Default for MainMenu {
+    fn default() -> Self {
+        Self::zeroed()
+    }
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum CharacterMenuMode {
+    Inactive,
+    CharacterSettings,
+    NameEntry,
+    WeaponSelect,
+    StartNewGame,
+    Unknown(u32),
+}
+
+impl CharacterMenuMode {
+    const fn from_raw(value: u32) -> Self {
+        match value {
+            0 => Self::Inactive,
+            1 => Self::CharacterSettings,
+            2 => Self::NameEntry,
+            3 => Self::WeaponSelect,
+            4 => Self::StartNewGame,
+            _ => Self::Unknown(value),
+        }
+    }
+}
+
+#[binrw]
+#[derive(Debug, Clone, Zeroable)]
+pub struct NewGameCharacterMenu {
+    unk00: [u8; 8],
+    active_mode: u32,
+    selected_section: u32, // 0 = Name Entry, 1 = Head Select, 2 = Body Select, 3 = Weapon Select
+    next_mode: u32,
+    unk14: u32,
+    unk18: [u8; 0x38],
+    player_model_index: i32,
+    unk54: f32,
+    unk58: [u8; 0x14],
+    is_manji: i32,
+    unk70: u32,
+}
+
+impl NewGameCharacterMenu {
+    pub const fn active_mode(&self) -> CharacterMenuMode {
+        CharacterMenuMode::from_raw(self.active_mode)
+    }
+
+    pub const fn next_mode(&self) -> CharacterMenuMode {
+        CharacterMenuMode::from_raw(self.next_mode)
+    }
+
+    pub const fn is_manji(&self) -> bool {
+        self.is_manji != 0
+    }
+}
+
+impl Default for NewGameCharacterMenu {
+    fn default() -> Self {
+        Self::zeroed()
+    }
+}
 
 #[binrw]
 #[derive(Debug, Clone, Zeroable)]
@@ -315,14 +483,23 @@ pub struct GameVersion {
     fingerprint_address: usize,
     game_state_address: usize,
     character_data_address: usize,
-    character_list_address: usize,
+    engine_address: usize,
     character_size: usize,
+    engine_size: usize,
 }
 
 impl GameVersion {
     /// Whether this version includes the extra `unk860` block in `Character`.
     const fn character_has_extra(&self) -> bool {
         self.character_size > CHARACTER_BASE_SIZE
+    }
+
+    const fn engine_has_extra(&self) -> bool {
+        self.engine_size >= ENGINE_BASE_SIZE
+    }
+
+    const fn main_menu_address(&self) -> usize {
+        self.engine_address + MAIN_MENU_OFFSET
     }
 
     pub fn matches(&self, emulator: &Emulator) -> Result<bool> {
@@ -347,22 +524,27 @@ const GAME_VERSIONS: [GameVersion; 2] = [
         fingerprint_address: 0x00213260,
         game_state_address: 0x008c6f00,
         character_data_address: 0x00bf13e0,
-        character_list_address: 0x008b5c40,
+        engine_address: 0x008b5c00,
         character_size: 0xcd0,
+        engine_size: 0x44,
     },
     GameVersion {
         name: "SLPM-74405",
         fingerprint_address: 0x00219ed0,
         game_state_address: 0x008ecd00,
         character_data_address: 0x00c175b0,
-        character_list_address: 0x008dba3c,
+        engine_address: 0x008dba00,
         character_size: 0xdd0,
+        engine_size: 0x40,
     },
 ];
 
 pub struct Game {
     version: &'static GameVersion,
     emulator: Emulator,
+    pub engine: Engine,
+    main_menu: MainMenu,
+    new_game_character_menu: NewGameCharacterMenu,
     pub game_state: GameState,
     pub character_data: [CharacterData; NUM_CHARACTERS],
     characters: Vec<Character>,
@@ -373,6 +555,9 @@ impl Game {
         Self {
             version,
             emulator,
+            engine: Engine::default(),
+            main_menu: MainMenu::default(),
+            new_game_character_menu: NewGameCharacterMenu::default(),
             game_state: GameState::default(),
             character_data: [const { CharacterData::const_default() }; NUM_CHARACTERS],
             characters: Vec::new(),
@@ -401,6 +586,14 @@ impl Game {
             }
         }
 
+        self.engine = self
+            .emulator
+            .read_args(
+                self.version.engine_address,
+                self.version.engine_size,
+                (self.version.engine_has_extra(),),
+            )?;
+
         self.game_state = self
             .emulator
             .read(self.version.game_state_address, GAME_STATE_SIZE)?;
@@ -409,56 +602,74 @@ impl Game {
             CHARACTER_DATA_SIZE * NUM_CHARACTERS,
         )?;
 
-        let char_data_start = self.version.character_data_address as u32;
-        let char_data_end =
-            (self.version.character_data_address + CHARACTER_DATA_SIZE * NUM_CHARACTERS) as u32;
+        match self.engine.mode() {
+            EngineMode::MainMenu => {
+                self.characters.clear();
 
-        // characters in the scene are a linked list. we need to be a bit careful here as we can't
-        // read it all in one go, so it can change while we're reading it.
-        self.characters.clear();
-
-        let list_head: LinkedListHead = self
-            .emulator
-            .read(self.version.character_list_address, LINKED_LIST_SIZE)?;
-        let list_begin = list_head.first as usize;
-        if list_head.count == 0
-            || list_head.count > MAX_EVENT_CHARACTERS
-            || !Emulator::is_address_valid(list_begin, LINKED_LIST_SIZE)
-        {
-            // if something looks fishy, it could mean things aren't initialized properly. we'll just bail.
-            // on the other hand, if the count is 0, we simply don't need to do anything.
-            return Ok(());
-        }
-
-        let list_end = self.version.character_list_address as u32;
-        let character_size = self.version.character_size;
-        let has_extra = self.version.character_has_extra();
-        let mut entry: LinkedListEntry = self.emulator.read(list_begin, LINKED_LIST_SIZE)?;
-        for _ in 0..list_head.count {
-            let char_address = entry.object as usize;
-            if !Emulator::is_address_valid(char_address, character_size) {
-                break;
+                let main_menu_ptr: u32 = self.emulator.read(self.version.main_menu_address(), 4)?;
+                self.main_menu = self.emulator.read(main_menu_ptr as usize, MAIN_MENU_SIZE)?;
+                if self.main_menu.menu_mode() == MenuMode::NewGameCharacterMenu {
+                    self.new_game_character_menu = self
+                        .emulator
+                        .read(self.main_menu.new_game_character_menu as usize, NEW_GAME_CHARACTER_MENU_SIZE)?;
+                }
             }
+            // battle mode does not use the same character list as in-game; need to figure out
+            // where those characters are stored
+            EngineMode::InGame => {
+                let char_data_start = self.version.character_data_address as u32;
+                let char_data_end =
+                    (self.version.character_data_address + CHARACTER_DATA_SIZE * NUM_CHARACTERS) as u32;
 
-            let character: Character =
-                self.emulator
-                    .read_args(char_address, character_size, (has_extra,))?;
-            // sanity check: the character's data pointer should be in the range of the character data
-            if character.data < char_data_start || character.data >= char_data_end {
-                break;
-            }
-            self.characters.push(character);
+                // characters in the scene are a linked list. we need to be a bit careful here as we can't
+                // read it all in one go, so it can change while we're reading it.
+                self.characters.clear();
 
-            // if we encounter the list end pointer, stop even if we haven't found the reported number of characters
-            if entry.next == list_end {
-                break;
-            }
+                let list_head: LinkedListHead = self
+                    .emulator
+                    .read(self.engine.character_list as usize, LINKED_LIST_SIZE)?;
+                let list_begin = list_head.first as usize;
+                if list_head.count == 0
+                    || list_head.count > MAX_EVENT_CHARACTERS
+                    || !Emulator::is_address_valid(list_begin, LINKED_LIST_SIZE)
+                {
+                    // if something looks fishy, it could mean things aren't initialized properly. we'll just bail.
+                    // on the other hand, if the count is 0, we simply don't need to do anything.
+                    return Ok(());
+                }
 
-            let next_address = entry.next as usize;
-            if !Emulator::is_address_valid(next_address, LINKED_LIST_SIZE) {
-                break;
+                let list_end = self.engine.character_list;
+                let character_size = self.version.character_size;
+                let has_extra = self.version.character_has_extra();
+                let mut entry: LinkedListEntry = self.emulator.read(list_begin, LINKED_LIST_SIZE)?;
+                for _ in 0..list_head.count {
+                    let char_address = entry.object as usize;
+                    if !Emulator::is_address_valid(char_address, character_size) {
+                        break;
+                    }
+
+                    let character: Character =
+                        self.emulator
+                            .read_args(char_address, character_size, (has_extra,))?;
+                    // sanity check: the character's data pointer should be in the range of the character data
+                    if character.data < char_data_start || character.data >= char_data_end {
+                        break;
+                    }
+                    self.characters.push(character);
+
+                    // if we encounter the list end pointer, stop even if we haven't found the reported number of characters
+                    if entry.next == list_end {
+                        break;
+                    }
+
+                    let next_address = entry.next as usize;
+                    if !Emulator::is_address_valid(next_address, LINKED_LIST_SIZE) {
+                        break;
+                    }
+                    entry = self.emulator.read(next_address, LINKED_LIST_SIZE)?;
+                }
             }
-            entry = self.emulator.read(next_address, LINKED_LIST_SIZE)?;
+            _ => self.characters.clear(),
         }
 
         Ok(())
@@ -470,5 +681,13 @@ impl Game {
             let data_index = (chara.data as usize - self.version.character_data_address) / CHARACTER_DATA_SIZE;
             (chara, &self.character_data[data_index])
         })
+    }
+
+    pub fn main_menu(&self) -> Option<&MainMenu> {
+        (self.engine.mode() == EngineMode::MainMenu).then(|| &self.main_menu)
+    }
+
+    pub fn new_game_character_menu(&self) -> Option<&NewGameCharacterMenu> {
+        (self.engine.mode() == EngineMode::MainMenu && self.main_menu.menu_mode() == MenuMode::NewGameCharacterMenu).then(|| &self.new_game_character_menu)
     }
 }
