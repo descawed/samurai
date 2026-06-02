@@ -41,7 +41,9 @@ pub enum EngineMode {
 #[derive(Debug, Clone, Zeroable)]
 pub struct Engine {
     mode: i32,
-    unk004: [u8; 0x38],
+    unk004: [u8; 0x24],
+    player: u32,
+    unk02c: [u8; 0x10],
     #[br(if(has_extra, 0))]
     #[bw(if(has_extra))]
     unk03c: u32,
