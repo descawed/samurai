@@ -13,5 +13,8 @@ pub use texture::*;
 pub mod script;
 pub use script::*;
 
+pub mod splits;
+pub use splits::*;
+
 pub mod volume;
 pub use volume::*;

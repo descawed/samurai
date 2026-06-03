@@ -4,6 +4,20 @@
 //! a given [`Category`]. The autosplitter looks up the route for the active category and splits as
 //! the game reaches each event in turn.
 
+use std::io::Write;
+
+use anyhow::Result;
+use quick_xml::events::{BytesDecl, BytesEnd, BytesStart, BytesText, Event};
+use quick_xml::writer::Writer;
+
+use super::{ENDING_VARIABLE_NAME, NEW_GAME_VARIABLE_NAME};
+
+/// Version of the LiveSplit splits file format we generate
+const SPLITS_VERSION: &str = "1.7.0";
+
+/// LiveSplit game name
+const GAME_NAME: &str = "Way of the Samurai";
+
 /// A run category, identified by which of the game's six endings is being pursued and whether the
 /// run is New Game (NG) or New Game+ (NG+).
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
@@ -17,6 +31,27 @@ pub struct Category {
 impl Category {
     pub const fn new(ending: u8, new_game_plus: bool) -> Self {
         Self { ending, new_game_plus }
+    }
+
+    pub fn category_name(&self) -> String {
+        format!("Ending #{}", self.ending)
+    }
+
+    pub const fn mode_name(&self) -> &'static str {
+        if self.new_game_plus {
+            "NG+"
+        } else {
+            "NG"
+        }
+    }
+
+    /// Event that the game starts in for this category
+    pub const fn start_event(&self) -> RouteEvent {
+        if self.new_game_plus {
+            (0, 0)
+        } else {
+            (0, 2) // tutorial
+        }
     }
 }
 
@@ -39,16 +74,116 @@ impl Route {
     pub const fn events(&self) -> &'static [RouteEvent] {
         self.events
     }
+
+    /// Suggested name for the splits file for this route
+    pub fn splits_name(&self) -> String {
+        format!("{} - {} (Emulator, {})", GAME_NAME, self.category.category_name(), self.category.mode_name())
+    }
+
+    fn write_variable<W: Write>(writer: &mut Writer<W>, name: &str, value: &str) -> Result<()> {
+        writer.create_element("Variable")
+            .with_attributes([("name", name)])
+            .write_text_content(BytesText::new(value))?;
+        Ok(())
+    }
+
+    fn write_segment<W: Write>(writer: &mut Writer<W>, event: RouteEvent) -> Result<()> {
+        writer.write_event(Event::Start(BytesStart::new("Segment")))?;
+        writer
+            .create_element("Name")
+            .write_text_content(BytesText::new(&format!("Phase {} Event {}", event.0, event.1)))?;
+        writer.write_event(Event::End(BytesEnd::new("Segment")))?;
+        Ok(())
+    }
+
+    /// Serialize the route as LiveSplit splits XML
+    pub fn to_splits(&self) -> Result<String> {
+        let mut writer = Writer::new_with_indent(Vec::new(), b' ', 2);
+
+        writer.write_event(Event::Decl(BytesDecl::new("1.0", Some("UTF-8"), None)))?;
+
+        // <Run>
+        writer.write_event(Event::Start(
+            BytesStart::new("Run").with_attributes([("version", SPLITS_VERSION)]),
+        ))?;
+
+        writer.create_element("GameIcon").write_empty()?;
+        writer.create_element("GameName").write_text_content(BytesText::new(GAME_NAME))?;
+        writer
+            .create_element("CategoryName")
+            .write_text_content(BytesText::new(&self.category.category_name()))?;
+
+        // <Metadata>
+        writer.write_event(Event::Start(BytesStart::new("Metadata")))?;
+
+        writer
+            .create_element("Run")
+            .with_attributes([("id", "")])
+            .write_empty()?;
+
+        // PSP not supported yet
+        writer
+            .create_element("Platform")
+            .with_attributes([("usesEmulator", "True")])
+            .write_text_content(BytesText::new("PlayStation 2"))?;
+
+        // only Japanese versions currently supported
+        writer.create_element("Region").write_text_content(BytesText::new("JPN / NTSC"))?;
+
+        // <Variables>
+        writer.write_event(Event::Start(BytesStart::new("Variables")))?;
+
+        Self::write_variable(&mut writer, "Platform", "Emulator")?;
+        Self::write_variable(&mut writer, "Mode", self.category.mode_name())?;
+
+        writer.write_event(Event::End(BytesEnd::new("Variables")))?;
+        // </Variables>
+
+        // <CustomVariables>
+        writer.write_event(Event::Start(BytesStart::new("CustomVariables")))?;
+
+        Self::write_variable(&mut writer, ENDING_VARIABLE_NAME, &self.category.ending.to_string())?;
+        Self::write_variable(&mut writer, NEW_GAME_VARIABLE_NAME, self.category.mode_name())?;
+
+        writer.write_event(Event::End(BytesEnd::new("CustomVariables")))?;
+        // </CustomVariables>
+
+        writer.write_event(Event::End(BytesEnd::new("Metadata")))?;
+        // </Metadata>
+
+        writer.create_element("Offset").write_text_content(BytesText::new("00:00:00"))?;
+        writer.create_element("AttemptCount").write_text_content(BytesText::new("0"))?;
+        writer.create_element("AttemptHistory").write_empty()?;
+
+        // <Segments>
+        writer.write_event(Event::Start(BytesStart::new("Segments")))?;
+
+        Self::write_segment(&mut writer, self.category.start_event())?;
+        for event in self.events() {
+            Self::write_segment(&mut writer, *event)?;
+        }
+
+        writer.write_event(Event::End(BytesEnd::new("Segments")))?;
+        // </Segments>
+
+        writer.create_element("AutoSplitterSettings").write_empty()?;
+
+        writer.write_event(Event::End(BytesEnd::new("Run")))?;
+        // </Run>
+
+        Ok(String::from_utf8(writer.into_inner())?)
+    }
 }
 
 /// All known routes.
-static ROUTES: &[Route] = &[
+pub static ROUTES: &[Route] = &[
     Route {
         category: Category {
             ending: 3,
             new_game_plus: false,
         },
         events: &[
+            (0, 0),
             (1, 26),
             (1, 29),
             (1, 3),

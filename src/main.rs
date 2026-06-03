@@ -239,6 +239,15 @@ fn cli() -> Command {
                         .default_value("info")
                 )
         )
+        .subcommand(
+            Command::new("splits")
+                .about("Generate LiveSplit splits files from the autosplitter routes")
+                .arg(arg!(-s --"skip-existing" "Skip splits files that already exist in the destination directory"))
+                .arg(
+                    arg!(<PATH> "Path to the directory where the splits files will be created. Will be created if it doesn't exist.")
+                        .value_parser(clap::value_parser!(PathBuf))
+                )
+        )
 }
 
 fn main() -> Result<()> {
@@ -474,6 +483,14 @@ fn main() -> Result<()> {
                 new_game_plus,
                 log_level,
             )?;
+        }
+        Some(("splits", splits_matches)) => {
+            let skip_existing = splits_matches.get_flag("skip-existing");
+            let path = splits_matches
+                .get_one::<PathBuf>("PATH")
+                .expect("Path to splits directory is required");
+
+            create_splits(path, skip_existing)?;
         }
         _ => unreachable!(),
     }
