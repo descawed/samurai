@@ -136,6 +136,9 @@ fn is_valid_run_mode(game: &Game) -> bool {
                     | MenuMode::NewGameCharacterMenu
                     | MenuMode::SaveGame
                     | MenuMode::ContinueFromSave
+                    // I've seen the game enter an unknown mode 16 in the original release after the
+                    // memory card warning on new game start
+                    | MenuMode::Unknown(_)
             )
         ),
         _ => false,

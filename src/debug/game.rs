@@ -126,6 +126,8 @@ impl MainMenu {
             12 | 13 => MenuMode::ResultsScreen(self.menu_mode),
             14 => MenuMode::SaveGame,
             15 => MenuMode::ContinueFromSave,
+            // FIXME: 16 is SpecialMoviesMenu in Kanzenban but some other unknown value in the
+            //  original release
             _ => MenuMode::Unknown(self.menu_mode),
         }
     }

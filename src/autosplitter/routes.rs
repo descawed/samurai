@@ -185,7 +185,7 @@ pub static ROUTES: &[Route] = &[
         events: &[
             (0, 0),
             (1, 26),
-            (1, 29),
+            (1, 4), // FIXME: in later versions, this is (1, 29)
             (1, 3),
             (2, 17),
             (2, 2),
