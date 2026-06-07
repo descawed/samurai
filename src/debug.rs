@@ -43,13 +43,23 @@ impl Default for State {
 pub struct Debugger {
     platform: RefCell<Platform>,
     state: State,
+    /// When set, `update` skips reading the (large) character data, saving time for consumers that
+    /// don't need it (e.g. the autosplitter).
+    skip_characters: bool,
 }
 
 impl Debugger {
     pub fn new() -> Self {
+        Self::with_options(false)
+    }
+
+    /// Create a debugger, optionally skipping the character data when updating. See
+    /// [`Game::update_with`].
+    pub fn with_options(skip_characters: bool) -> Self {
         Self {
             platform: RefCell::new(Platform::new(PROCESS_REFRESH_INTERVAL)),
             state: State::WaitingForEmulator,
+            skip_characters,
         }
     }
 
@@ -71,7 +81,7 @@ impl Debugger {
     }
 
     fn update_game(&self, mut game: Game) -> Result<State> {
-        let update_result = game.update();
+        let update_result = game.update_with(self.skip_characters);
         Ok(match update_result {
             Ok(()) => State::GameRunning(game),
             Err(DebugError::GameLost) => State::WaitingForGame(game.detach()),
@@ -122,6 +132,17 @@ impl Debugger {
         match &self.state {
             State::GameRunning(game) => Some(game),
             _ => None,
+        }
+    }
+
+    /// Read a single character's [`CharacterData`] on demand, identified by its index (a `CHID_`
+    /// value) in the character data array. Returns `None` if no game is currently running. This
+    /// works even when the debugger is configured to skip character data on update; see
+    /// [`Game::read_character_data`].
+    pub fn read_character_data(&self, id: usize) -> Result<Option<CharacterData>> {
+        match &self.state {
+            State::GameRunning(game) => game.read_character_data(id).map(Some),
+            _ => Ok(None),
         }
     }
 }

@@ -3,6 +3,7 @@ use std::str::FromStr;
 
 use anyhow::Result;
 use clap::{Command, arg};
+use log::LevelFilter;
 
 use samurai::cli::*;
 use samurai::module::DEFAULT_ALIGNMENT;
@@ -211,6 +212,42 @@ fn cli() -> Command {
             Command::new("debug")
                 .about("Debug the game running in PCSX2")
         )
+        .subcommand(
+            Command::new("autosplitter")
+                .about("Run a LiveSplit autosplitter for the game running in PCSX2")
+                .arg(
+                    arg!(-l --"live-split-port" <PORT> "Port that the LiveSplit server is running on")
+                        .value_parser(clap::value_parser!(u16))
+                        .default_value("16834")
+                )
+                .arg(
+                    arg!(-u --"update-frequency" <MILLIS> "How often to update the state of the game, in milliseconds")
+                        .value_parser(clap::value_parser!(u64))
+                        .default_value("15")
+                )
+                .arg(
+                    arg!(-e --ending <ENDING> "Target ending (1-6). If omitted, it's read from your splits' custom variables.")
+                        .value_parser(clap::value_parser!(u8).range(1..=6))
+                )
+                .arg(
+                    arg!(-n --"new-game" <TYPE> "Whether this is a New Game or New Game+ run. If omitted, it's read from your splits' custom variables.")
+                        .value_parser(["ng", "ng+", "new-game", "new-game-plus"])
+                )
+                .arg(
+                    arg!(-g --"log-level" <LEVEL> "What level of logging output to show")
+                        .value_parser(["off", "trace", "debug", "info", "warn", "error"])
+                        .default_value("info")
+                )
+        )
+        .subcommand(
+            Command::new("splits")
+                .about("Generate LiveSplit splits files from the autosplitter routes")
+                .arg(arg!(-s --"skip-existing" "Skip splits files that already exist in the destination directory"))
+                .arg(
+                    arg!(<PATH> "Path to the directory where the splits files will be created. Will be created if it doesn't exist.")
+                        .value_parser(clap::value_parser!(PathBuf))
+                )
+        )
 }
 
 fn main() -> Result<()> {
@@ -416,6 +453,44 @@ fn main() -> Result<()> {
         },
         Some(("debug", _)) => {
             run_debugger()?;
+        }
+        Some(("autosplitter", autosplitter_matches)) => {
+            let live_split_port = *autosplitter_matches
+                .get_one::<u16>("live-split-port")
+                .expect("live-split-port has a default value");
+
+            let update_frequency = *autosplitter_matches
+                .get_one::<u64>("update-frequency")
+                .expect("update-frequency has a default value");
+
+            let ending = autosplitter_matches.get_one::<u8>("ending").copied();
+
+            let new_game_plus = autosplitter_matches
+                .get_one::<String>("new-game")
+                .map(|value| matches!(value.as_str(), "ng+" | "new-game-plus"));
+
+            let log_level = LevelFilter::from_str(
+                autosplitter_matches
+                    .get_one::<String>("log-level")
+                    .expect("log-level has a default value"),
+            )
+            .unwrap_or(LevelFilter::Info);
+
+            run_autosplitter(
+                live_split_port,
+                update_frequency,
+                ending,
+                new_game_plus,
+                log_level,
+            )?;
+        }
+        Some(("splits", splits_matches)) => {
+            let skip_existing = splits_matches.get_flag("skip-existing");
+            let path = splits_matches
+                .get_one::<PathBuf>("PATH")
+                .expect("Path to splits directory is required");
+
+            create_splits(path, skip_existing)?;
         }
         _ => unreachable!(),
     }

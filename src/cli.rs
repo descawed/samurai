@@ -1,3 +1,6 @@
+pub mod autosplitter;
+pub use autosplitter::*;
+
 pub mod debug;
 pub use debug::*;
 
@@ -9,6 +12,9 @@ pub use texture::*;
 
 pub mod script;
 pub use script::*;
+
+pub mod splits;
+pub use splits::*;
 
 pub mod volume;
 pub use volume::*;
