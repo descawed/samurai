@@ -199,6 +199,35 @@ pub static ROUTES: &[Route] = &[
             (5, 26),
         ],
     },
+    Route {
+        category: Category {
+            ending: 5,
+            new_game_plus: false,
+        },
+        events: &[
+            (0, 0),
+            (1, 26),
+            (1, 4),
+            (1, 3),
+            (2, 17),
+            (2, 2),
+            (3, 3),
+            (3, 2),
+            (4, 4),
+            (4, 0),
+            (4, 9),
+            (4, 1),
+            (4, 12),
+            (5, 5),
+            (5, 12),
+            (5, 10),
+            (5, 1),
+            (5, 13),
+            (5, 14),
+            (5, 15),
+            (5, 16),
+        ],
+    },
 ];
 
 /// Look up the route for a given category if one is defined.
