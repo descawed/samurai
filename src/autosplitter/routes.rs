@@ -179,6 +179,32 @@ impl Route {
 pub static ROUTES: &[Route] = &[
     Route {
         category: Category {
+            ending: 2,
+            new_game_plus: false,
+        },
+        events: &[
+            (0, 0),
+            (1, 26),
+            (1, 4),
+            (1, 3),
+            (2, 17),
+            (2, 2),
+            (3, 3),
+            (3, 2),
+            (3, 14),
+            (3, 15),
+            (3, 16),
+            (3, 13),
+            (4, 4),
+            (4, 2),
+            (4, 19),
+            (5, 2),
+            (5, 25),
+            (5, 26),
+        ],
+    },
+    Route {
+        category: Category {
             ending: 3,
             new_game_plus: false,
         },
