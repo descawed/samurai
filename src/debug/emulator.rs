@@ -1,5 +1,5 @@
 use std::fs;
-use std::fs::File;
+use std::fs::{File, OpenOptions};
 use std::io::{BufRead, BufReader, Cursor, ErrorKind};
 use std::ops::Deref;
 use std::os::unix::fs::FileExt;
@@ -59,7 +59,10 @@ impl Emulator {
                 }
             }
 
-            let memory = File::open(format!("/proc/{}/mem", pid)).unwrap();
+            let memory = OpenOptions::new()
+                .read(true)
+                .write(true)
+                .open(format!("/proc/{}/mem", pid)).unwrap();
             let mut buf = [0u8; 8];
             memory.read_exact_at(&mut buf, ee_mem_ptr).unwrap();
             let ee_mem_base = usize::from_le_bytes(buf);

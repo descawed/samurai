@@ -27,6 +27,16 @@ const MAIN_MENU_SIZE: usize = 0x68;
 const NEW_GAME_CHARACTER_MENU_SIZE: usize = 0x74;
 // size of both the list head and a list entry
 const LINKED_LIST_SIZE: usize = 12;
+/// MIPS assembly: jr $ra; nop;
+const JR_RA_NOP: [u8; 8] = [8, 0, 0xE0, 3, 0, 0, 0, 0];
+/// Size of the [`Camera`] struct in memory.
+const CAMERA_SIZE: usize = 0xc0;
+/// Offset of the position vector within the [`Camera`] struct. The position, look, and up vectors
+/// are contiguous from here; this 48-byte region is all free cam writes back, leaving the camera's
+/// other fields (e.g. its target character) untouched.
+const CAMERA_TRANSFORM_OFFSET: usize = 0x90;
+/// World up axis. y is the vertical axis; positive is up.
+const WORLD_UP: [f32; 3] = [0.0, 1.0, 0.0];
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub enum EngineMode {
@@ -79,6 +89,141 @@ impl Engine {
 impl Default for Engine {
     fn default() -> Self {
         Self::zeroed()
+    }
+}
+
+#[binrw]
+#[derive(Debug, Clone, Zeroable)]
+pub struct Camera {
+    target_character: u32,
+    unk004: [u8; 0x8c],
+    position: [f32; 4],
+    look_vector: [f32; 4],
+    up_vector: [f32; 4],
+}
+
+impl Default for Camera {
+    fn default() -> Self {
+        Self::zeroed()
+    }
+}
+
+/// The xyz components of a homogeneous `[f32; 4]` vector, ignoring w.
+fn xyz(v: [f32; 4]) -> [f32; 3] {
+    [v[0], v[1], v[2]]
+}
+
+/// Overwrite the xyz components of `v`, preserving its w component.
+fn set_xyz(v: &mut [f32; 4], xyz: [f32; 3]) {
+    v[0] = xyz[0];
+    v[1] = xyz[1];
+    v[2] = xyz[2];
+}
+
+fn normalize3(v: [f32; 3]) -> [f32; 3] {
+    let len = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
+    if len > 0.0 {
+        [v[0] / len, v[1] / len, v[2] / len]
+    } else {
+        v
+    }
+}
+
+fn cross3(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
+    [
+        a[1] * b[2] - a[2] * b[1],
+        a[2] * b[0] - a[0] * b[2],
+        a[0] * b[1] - a[1] * b[0],
+    ]
+}
+
+/// Rotate `v` about the (not necessarily unit-length) `axis` by `angle` radians, via Rodrigues'
+/// rotation formula.
+fn rotate3(v: [f32; 3], axis: [f32; 3], angle: f32) -> [f32; 3] {
+    let (sin, cos) = angle.sin_cos();
+    let k = normalize3(axis);
+    let cross = cross3(k, v);
+    let dot = k[0] * v[0] + k[1] * v[1] + k[2] * v[2];
+    [
+        v[0] * cos + cross[0] * sin + k[0] * dot * (1.0 - cos),
+        v[1] * cos + cross[1] * sin + k[1] * dot * (1.0 - cos),
+        v[2] * cos + cross[2] * sin + k[2] * dot * (1.0 - cos),
+    ]
+}
+
+/// Active free-camera state. Holds the working copy of the [`Camera`] that gets written back to
+/// emulator memory each frame, the resolved address of the live camera, and the original
+/// instructions we patched over so they can be restored when free cam is turned off.
+///
+/// Motion is expressed in camera-relative terms (dolly/strafe/rise, yaw/pitch) so callers don't
+/// have to do any vector math; the geometry lives here and is independent of the emulator.
+#[derive(Debug, Clone)]
+pub struct FreeCam {
+    camera: Camera,
+    camera_address: usize,
+    saved_instructions: [u8; 8],
+}
+
+impl FreeCam {
+    /// Normalized direction the camera is looking.
+    fn forward(&self) -> [f32; 3] {
+        normalize3(xyz(self.camera.look_vector))
+    }
+
+    /// Normalized camera-right axis (look × world-up).
+    fn right(&self) -> [f32; 3] {
+        normalize3(cross3(self.forward(), WORLD_UP))
+    }
+
+    fn translate(&mut self, dir: [f32; 3], dist: f32) {
+        // zip stops at dir's length (3), leaving the position's w component untouched
+        for (pos, d) in self.camera.position.iter_mut().zip(dir) {
+            *pos += d * dist;
+        }
+    }
+
+    /// Move forward (positive) or backward (negative) along the look vector.
+    pub fn dolly(&mut self, dist: f32) {
+        let forward = self.forward();
+        self.translate(forward, dist);
+    }
+
+    /// Move right (positive) or left (negative), perpendicular to the look vector.
+    pub fn strafe(&mut self, dist: f32) {
+        let right = self.right();
+        self.translate(right, dist);
+    }
+
+    /// Move up (positive) or down (negative) along the world vertical axis.
+    pub fn rise(&mut self, dist: f32) {
+        self.translate(WORLD_UP, dist);
+    }
+
+    /// Turn the camera left/right about the world vertical axis. The entire orientation (both look
+    /// and up vectors) is rotated, so panning stays purely horizontal regardless of the current
+    /// pitch.
+    pub fn yaw(&mut self, radians: f32) {
+        let look = rotate3(xyz(self.camera.look_vector), WORLD_UP, radians);
+        set_xyz(&mut self.camera.look_vector, look);
+        let up = rotate3(xyz(self.camera.up_vector), WORLD_UP, radians);
+        set_xyz(&mut self.camera.up_vector, up);
+    }
+
+    /// Rotate the look direction up/down about the camera-right axis, keeping the up vector
+    /// consistent.
+    pub fn pitch(&mut self, radians: f32) {
+        let right = self.right();
+        let look = rotate3(xyz(self.camera.look_vector), right, radians);
+        set_xyz(&mut self.camera.look_vector, look);
+        set_xyz(&mut self.camera.up_vector, normalize3(cross3(right, look)));
+    }
+
+    pub fn position(&self) -> [f32; 3] {
+        xyz(self.camera.position)
+    }
+
+    pub fn look(&self) -> [f32; 3] {
+        xyz(self.camera.look_vector)
     }
 }
 
@@ -503,6 +648,9 @@ pub struct GameVersion {
     game_state_address: usize,
     character_data_address: usize,
     engine_address: usize,
+    free_cam_patch_address: usize,
+    /// Offset within the engine of the pointer to the [`Camera`].
+    camera_pointer_offset: usize,
     character_size: usize,
     engine_size: usize,
     /// Whether the character [`LinkedListHead`] is embedded directly in the engine (at the
@@ -522,6 +670,11 @@ impl GameVersion {
 
     const fn main_menu_address(&self) -> usize {
         self.engine_address + MAIN_MENU_OFFSET
+    }
+
+    /// Address of the pointer to the [`Camera`] within the engine.
+    const fn camera_pointer_address(&self) -> usize {
+        self.engine_address + self.camera_pointer_offset
     }
 
     /// Resolve the address of the character [`LinkedListHead`]. For versions that embed the head
@@ -559,6 +712,8 @@ const GAME_VERSIONS: [GameVersion; 2] = [
         game_state_address: 0x008c6f00,
         character_data_address: 0x00bf13e0,
         engine_address: 0x008b5c00,
+        free_cam_patch_address: 0x0011d370,
+        camera_pointer_offset: 0x3c,
         character_size: 0xcd0,
         engine_size: 0x44,
         character_list_embedded: true,
@@ -569,6 +724,8 @@ const GAME_VERSIONS: [GameVersion; 2] = [
         game_state_address: 0x008ecd00,
         character_data_address: 0x00c175b0,
         engine_address: 0x008dba00,
+        free_cam_patch_address: 0x0011d120,
+        camera_pointer_offset: 0x38,
         character_size: 0xdd0,
         engine_size: 0x40,
         character_list_embedded: false,
@@ -577,35 +734,49 @@ const GAME_VERSIONS: [GameVersion; 2] = [
 
 pub struct Game {
     version: &'static GameVersion,
-    emulator: Emulator,
+    /// Always `Some` while the game is live. It is `take`n by [`detach`](Self::detach), and held in
+    /// an `Option` so [`Game`] can implement [`Drop`] (which would otherwise forbid moving the
+    /// emulator out) to restore any free-cam patch when the game goes away.
+    emulator: Option<Emulator>,
     pub engine: Engine,
     main_menu: MainMenu,
     new_game_character_menu: NewGameCharacterMenu,
     pub game_state: GameState,
     pub character_data: [CharacterData; NUM_CHARACTERS],
     characters: Vec<Character>,
+    /// Present while free camera mode is active.
+    free_cam: Option<FreeCam>,
 }
 
 impl Game {
     pub fn new(version: &'static GameVersion, emulator: Emulator) -> Self {
         Self {
             version,
-            emulator,
+            emulator: Some(emulator),
             engine: Engine::default(),
             main_menu: MainMenu::default(),
             new_game_character_menu: NewGameCharacterMenu::default(),
             game_state: GameState::default(),
             character_data: [const { CharacterData::const_default() }; NUM_CHARACTERS],
             characters: Vec::new(),
+            free_cam: None,
         }
     }
 
-    pub fn detach(self) -> Emulator {
-        self.emulator
+    /// Borrow the emulator. Panics only if called after [`detach`](Self::detach), which never
+    /// happens since `detach` consumes `self`.
+    fn emulator(&self) -> &Emulator {
+        self.emulator.as_ref().expect("emulator already detached")
+    }
+
+    pub fn detach(mut self) -> Emulator {
+        // restore any free-cam patch before we give up our handle to the emulator
+        let _ = self.disable_free_cam();
+        self.emulator.take().expect("emulator already detached")
     }
 
     pub fn pid(&self) -> Pid {
-        self.emulator.pid()
+        self.emulator().pid()
     }
 
     pub fn version_name(&self) -> &'static str {
@@ -613,11 +784,11 @@ impl Game {
     }
 
     fn read_main_menu(&mut self) -> Result<()> {
-        let main_menu_ptr: u32 = self.emulator.read(self.version.main_menu_address(), 4)?;
-        self.main_menu = self.emulator.read(main_menu_ptr as usize, MAIN_MENU_SIZE)?;
+        let main_menu_ptr: u32 = self.emulator().read(self.version.main_menu_address(), 4)?;
+        self.main_menu = self.emulator().read(main_menu_ptr as usize, MAIN_MENU_SIZE)?;
         if self.main_menu.menu_mode() == MenuMode::NewGameCharacterMenu {
             self.new_game_character_menu = self
-                .emulator
+                .emulator()
                 .read(self.main_menu.new_game_character_menu as usize, NEW_GAME_CHARACTER_MENU_SIZE)?;
         }
         Ok(())
@@ -632,24 +803,31 @@ impl Game {
     /// for consumers that only care about engine, menu, and game state (e.g. the autosplitter).
     pub fn update_with(&mut self, skip_characters: bool) -> Result<()> {
         // first, verify the emulator is still running the same game version
-        if !self.version.matches(&self.emulator)? {
+        if !self.version.matches(self.emulator())? {
             // if not, see if we're running a different known version
-            match GameVersion::search_for_version(&self.emulator)? {
+            match GameVersion::search_for_version(self.emulator())? {
                 Some(version) => self.version = version,
                 None => return Err(DebugError::GameLost),
             }
         }
 
         self.engine = self
-            .emulator
+            .emulator()
             .read_args(
                 self.version.engine_address,
                 self.version.engine_size,
                 (self.version.engine_has_extra(),),
             )?;
 
+        // while free cam is active, keep overwriting the camera with our controlled transform.
+        // best-effort: if the camera pointer has gone stale (e.g. a scene change), don't tear the
+        // whole debugger down over it.
+        if self.free_cam.is_some() {
+            let _ = self.write_free_cam();
+        }
+
         self.game_state = self
-            .emulator
+            .emulator()
             .read(self.version.game_state_address, GAME_STATE_SIZE)?;
 
         if skip_characters {
@@ -661,7 +839,7 @@ impl Game {
             return Ok(());
         }
 
-        self.character_data = self.emulator.read(
+        self.character_data = self.emulator().read(
             self.version.character_data_address,
             CHARACTER_DATA_SIZE * NUM_CHARACTERS,
         )?;
@@ -684,7 +862,7 @@ impl Game {
 
                 let head_address = self.version.character_list_head_address(&self.engine);
                 let list_head: LinkedListHead =
-                    self.emulator.read(head_address, LINKED_LIST_SIZE)?;
+                    self.emulator().read(head_address, LINKED_LIST_SIZE)?;
                 let list_begin = list_head.first as usize;
                 if list_head.count == 0
                     || list_head.count > MAX_EVENT_CHARACTERS
@@ -698,7 +876,7 @@ impl Game {
                 let list_end = head_address as u32;
                 let character_size = self.version.character_size;
                 let has_extra = self.version.character_has_extra();
-                let mut entry: LinkedListEntry = self.emulator.read(list_begin, LINKED_LIST_SIZE)?;
+                let mut entry: LinkedListEntry = self.emulator().read(list_begin, LINKED_LIST_SIZE)?;
                 for _ in 0..list_head.count {
                     let char_address = entry.object as usize;
                     if !Emulator::is_address_valid(char_address, character_size) {
@@ -706,7 +884,7 @@ impl Game {
                     }
 
                     let character: Character =
-                        self.emulator
+                        self.emulator()
                             .read_args(char_address, character_size, (has_extra,))?;
                     // sanity check: the character's data pointer should be in the range of the character data
                     if character.data < char_data_start || character.data >= char_data_end {
@@ -723,7 +901,7 @@ impl Game {
                     if !Emulator::is_address_valid(next_address, LINKED_LIST_SIZE) {
                         break;
                     }
-                    entry = self.emulator.read(next_address, LINKED_LIST_SIZE)?;
+                    entry = self.emulator().read(next_address, LINKED_LIST_SIZE)?;
                 }
             }
             _ => self.characters.clear(),
@@ -739,7 +917,7 @@ impl Game {
     /// final boss's health).
     pub fn read_character_data(&self, id: usize) -> Result<CharacterData> {
         let address = self.version.character_data_address + id * CHARACTER_DATA_SIZE;
-        self.emulator.read(address, CHARACTER_DATA_SIZE)
+        self.emulator().read(address, CHARACTER_DATA_SIZE)
     }
 
     pub fn iter_characters(&self) -> impl Iterator<Item = (&Character, &CharacterData)> {
@@ -756,5 +934,172 @@ impl Game {
 
     pub fn new_game_character_menu(&self) -> Option<&NewGameCharacterMenu> {
         (self.engine.mode() == EngineMode::MainMenu && self.main_menu.menu_mode() == MenuMode::NewGameCharacterMenu).then(|| &self.new_game_character_menu)
+    }
+
+    /// Whether free camera mode is currently active.
+    pub fn is_free_cam(&self) -> bool {
+        self.free_cam.is_some()
+    }
+
+    /// The active free camera, if any. Use [`adjust_free_cam`](Self::adjust_free_cam) to move it.
+    pub fn free_cam(&self) -> Option<&FreeCam> {
+        self.free_cam.as_ref()
+    }
+
+    /// Toggle free camera mode, returning the new state (`true` if now active). Turning it on
+    /// patches out the game's camera update and snapshots the live camera; turning it off restores
+    /// the original instructions.
+    pub fn toggle_free_cam(&mut self) -> Result<bool> {
+        if self.free_cam.is_some() {
+            self.disable_free_cam()?;
+            Ok(false)
+        } else {
+            self.enable_free_cam()?;
+            Ok(true)
+        }
+    }
+
+    fn enable_free_cam(&mut self) -> Result<()> {
+        let emulator = self.emulator();
+        let patch_address = self.version.free_cam_patch_address;
+        // save the original instructions before patching so we can restore them later
+        let saved_instructions: [u8; 8] = emulator.read(patch_address, JR_RA_NOP.len())?;
+        // resolve and snapshot the live camera
+        let camera_address = emulator.read::<u32>(self.version.camera_pointer_address(), 4)? as usize;
+        let camera: Camera = emulator.read(camera_address, CAMERA_SIZE)?;
+        // patch out the game's camera update so it stops fighting us
+        emulator.write_memory(patch_address, &JR_RA_NOP)?;
+        self.free_cam = Some(FreeCam {
+            camera,
+            camera_address,
+            saved_instructions,
+        });
+        Ok(())
+    }
+
+    fn disable_free_cam(&mut self) -> Result<()> {
+        if let Some(free_cam) = self.free_cam.take()
+            && let Some(emulator) = self.emulator.as_ref()
+        {
+            emulator.write_memory(self.version.free_cam_patch_address, &free_cam.saved_instructions)?;
+        }
+        Ok(())
+    }
+
+    /// Write the working camera transform (position/look/up only) back to emulator memory.
+    fn write_free_cam(&self) -> Result<()> {
+        if let Some(free_cam) = self.free_cam.as_ref() {
+            Self::write_camera_transform(self.emulator(), free_cam)?;
+        }
+        Ok(())
+    }
+
+    fn write_camera_transform(emulator: &Emulator, free_cam: &FreeCam) -> Result<()> {
+        let base = free_cam.camera_address + CAMERA_TRANSFORM_OFFSET;
+        emulator.write(base, &free_cam.camera.position)?;
+        emulator.write(base + 0x10, &free_cam.camera.look_vector)?;
+        emulator.write(base + 0x20, &free_cam.camera.up_vector)?;
+        Ok(())
+    }
+
+    /// Apply an adjustment to the active free camera and immediately write it back, so motion is
+    /// responsive rather than waiting for the next [`update`](Self::update). No-op if free cam is
+    /// off.
+    pub fn adjust_free_cam(&mut self, f: impl FnOnce(&mut FreeCam)) -> Result<()> {
+        // disjoint field borrows: `free_cam` mutably, `emulator` immutably
+        if let Some(free_cam) = self.free_cam.as_mut()
+            && let Some(emulator) = self.emulator.as_ref()
+        {
+            f(free_cam);
+            Self::write_camera_transform(emulator, free_cam)?;
+        }
+        Ok(())
+    }
+}
+
+impl Drop for Game {
+    fn drop(&mut self) {
+        // restore the camera patch if free cam is still on, so we don't leave the game frozen when
+        // the debugger exits or the game is lost. best-effort: nothing useful to do on failure.
+        let _ = self.disable_free_cam();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A free camera at the origin looking down +z with +y up.
+    fn test_free_cam() -> FreeCam {
+        let mut camera = Camera::default();
+        camera.position = [0.0, 0.0, 0.0, 1.0];
+        camera.look_vector = [0.0, 0.0, 1.0, 0.0];
+        camera.up_vector = [0.0, 1.0, 0.0, 0.0];
+        FreeCam {
+            camera,
+            camera_address: 0,
+            saved_instructions: [0; 8],
+        }
+    }
+
+    fn assert_close(actual: [f32; 3], expected: [f32; 3]) {
+        for (a, e) in actual.iter().zip(expected) {
+            assert!((a - e).abs() < 1e-5, "got {actual:?}, expected {expected:?}");
+        }
+    }
+
+    #[test]
+    fn dolly_moves_along_look() {
+        let mut cam = test_free_cam();
+        cam.dolly(2.0);
+        assert_close(cam.position(), [0.0, 0.0, 2.0]);
+        // w component must be preserved
+        assert_eq!(cam.camera.position[3], 1.0);
+    }
+
+    #[test]
+    fn rise_moves_along_world_up() {
+        let mut cam = test_free_cam();
+        cam.rise(3.0);
+        assert_close(cam.position(), [0.0, 3.0, 0.0]);
+    }
+
+    #[test]
+    fn strafe_moves_perpendicular_to_look() {
+        let mut cam = test_free_cam();
+        cam.strafe(1.0);
+        // right = look × world-up = (0,0,1) × (0,1,0) = (-1, 0, 0)
+        assert_close(cam.position(), [-1.0, 0.0, 0.0]);
+    }
+
+    #[test]
+    fn yaw_rotates_look_about_world_up() {
+        let mut cam = test_free_cam();
+        cam.yaw(std::f32::consts::FRAC_PI_2);
+        assert_close(cam.look(), [1.0, 0.0, 0.0]);
+    }
+
+    #[test]
+    fn pitch_rotates_look_and_keeps_up_consistent() {
+        let mut cam = test_free_cam();
+        cam.pitch(std::f32::consts::FRAC_PI_2);
+        // looking straight up, with up now pointing back along -z
+        assert_close(cam.look(), [0.0, 1.0, 0.0]);
+        assert_close(xyz(cam.camera.up_vector), [0.0, 0.0, -1.0]);
+    }
+
+    #[test]
+    fn yaw_pan_stays_horizontal_when_pitched() {
+        let mut cam = test_free_cam();
+        // pitch down 45°, then pan; the look vector's vertical component must not change
+        cam.pitch(-std::f32::consts::FRAC_PI_4);
+        let pitched_y = cam.look()[1];
+        cam.yaw(0.7);
+        assert!((cam.look()[1] - pitched_y).abs() < 1e-5);
+        // the basis stays orthonormal: up remains perpendicular to look
+        let look = cam.look();
+        let up = xyz(cam.camera.up_vector);
+        let dot = look[0] * up[0] + look[1] * up[1] + look[2] * up[2];
+        assert!(dot.abs() < 1e-5, "look and up should stay orthogonal, dot = {dot}");
     }
 }

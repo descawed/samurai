@@ -212,8 +212,8 @@ following:
 - Read-only
 
 The `debug` command has no options; it will automatically wait for and attach to a PCSX2 process. Once attached, the
-display updates every 3 seconds. Press `q` to exit. The debugger provides a TUI with three sections: Globals,
-Characters, and Flags. Use tab to switch between them.
+display updates every 3 seconds. Press `q` to exit. The debugger provides a TUI with four sections: Globals,
+Characters, Flags, and Camera. Use tab to switch between them.
 
 ### Globals
 
@@ -239,3 +239,9 @@ four tabs corresponding to the four flag/variable types:
 
 Use the left and right arrow keys to switch between tabs and the up and down arrow keys to scroll through the flags.
 Flags whose value is 0 (the default value) are grayed out to make flags that have been set stand out.
+
+### Camera
+
+The camera panel allows toggling free camera mode in the game. The recompiler must be disabled in PCSX2's advanced
+settings, otherwise toggling free cam mode will fail. The camera is controlled from the debugger terminal; controls are
+displayed within the panel.
