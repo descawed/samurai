@@ -67,7 +67,7 @@ the path to the game's `script` directory, and an output directory where the for
   `#Object#Attribute`. This can be nested indefinitely for attributes which have their own attributes, e.g.
   `#Object#SubObject#SubSubObject#Attribute`.
 - Function and method calls are expressions and their result may be assigned to a variable:
-  `#IsPlayerDead | $GetCharDead $#CHID_SHUJINKO;`
+  `#IsPlayerDead | $GetCharDead #CHID_SHUJINKO;`
 - Function definitions start with `?F`, optionally followed by an argument list in parentheses (typically with no `#` in
   front of the argument names, although it is allowed), followed by the function body in `{}`. This is an expression and
   can be assigned to a variable, which is how functions are usually defined. Usually, the `#` prefix is used on the
@@ -149,7 +149,7 @@ the path to the game's `script` directory, and an output directory where the for
   statements, but any variables defined in this block become attributes/methods of the object:
   ```
   (#ClassFLAG : #object) @{
-    #id : $#CHID_SHUJINKO;
+    #id : #CHID_SHUJINKO;
     #SET : ?F (a) {
         #id = #a;
     };
@@ -184,7 +184,7 @@ this object and define any desired attributes and methods of the class on the co
 
 ```
 (#ClassFLAG : #object) @{
-  #id : $#CHID_SHUJINKO;
+  #id : #CHID_SHUJINKO;
   #SET : ?F (a) {
       #id = #a;
   };
@@ -195,11 +195,11 @@ Then the script can create "instances" of this class by making copies of the cla
 
 ```
 #FlagSuzu : #ClassFLAG;
-#FlagSuzu SET $#CHID_SUZU;
+#FlagSuzu SET #CHID_SUZU;
 #FlagDona : #ClassFLAG;
-#FlagDona SET $#CHID_DONA;
+#FlagDona SET #CHID_DONA;
 #FlagShire : #ClassFLAG;
-#FlagShire SET $#CHID_SHIRETOKO;
+#FlagShire SET #CHID_SHIRETOKO;
 ```
 
 ## Debugger
