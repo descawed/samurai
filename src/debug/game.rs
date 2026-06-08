@@ -17,6 +17,10 @@ const CHARACTER_DATA_SIZE: usize = 0x200;
 /// (`unk860`) before `timeouts`, so a larger `character_size` indicates that block is present.
 const CHARACTER_BASE_SIZE: usize = 0xcd0;
 const ENGINE_BASE_SIZE: usize = 0x44;
+/// Offset of the `character_list` field within the engine for versions that embed the
+/// [`LinkedListHead`] directly instead of storing a pointer to it. This is the same location the
+/// `character_list` pointer would occupy in those versions (after the `unk03c` field).
+const EMBEDDED_CHARACTER_LIST_OFFSET: usize = 0x40;
 /// offset from the engine address to the main menu pointer
 const MAIN_MENU_OFFSET: usize = 0x28980;
 const MAIN_MENU_SIZE: usize = 0x68;
@@ -50,6 +54,10 @@ pub struct Engine {
     #[br(if(has_extra, 0))]
     #[bw(if(has_extra))]
     unk03c: u32,
+    // For most versions this is a pointer to the character [`LinkedListHead`]. Some versions (e.g.
+    // SLPS-20178) instead embed the list head directly at this offset, in which case this field
+    // holds the head's first word (`last`) and should not be treated as a pointer. Use
+    // [`GameVersion::character_list_head_address`] to resolve the head's address for either layout.
     character_list: u32,
 }
 
@@ -497,6 +505,9 @@ pub struct GameVersion {
     engine_address: usize,
     character_size: usize,
     engine_size: usize,
+    /// Whether the character [`LinkedListHead`] is embedded directly in the engine (at the
+    /// `character_list` offset) rather than referenced via a pointer.
+    character_list_embedded: bool,
 }
 
 impl GameVersion {
@@ -511,6 +522,18 @@ impl GameVersion {
 
     const fn main_menu_address(&self) -> usize {
         self.engine_address + MAIN_MENU_OFFSET
+    }
+
+    /// Resolve the address of the character [`LinkedListHead`]. For versions that embed the head
+    /// directly in the engine, this is a fixed offset into the engine; otherwise it's the value of
+    /// the engine's `character_list` pointer. In both cases this address also doubles as the
+    /// sentinel marking the end of the list.
+    fn character_list_head_address(&self, engine: &Engine) -> usize {
+        if self.character_list_embedded {
+            self.engine_address + EMBEDDED_CHARACTER_LIST_OFFSET
+        } else {
+            engine.character_list as usize
+        }
     }
 
     pub fn matches(&self, emulator: &Emulator) -> Result<bool> {
@@ -538,6 +561,7 @@ const GAME_VERSIONS: [GameVersion; 2] = [
         engine_address: 0x008b5c00,
         character_size: 0xcd0,
         engine_size: 0x44,
+        character_list_embedded: true,
     },
     GameVersion {
         name: "SLPM-74405",
@@ -547,6 +571,7 @@ const GAME_VERSIONS: [GameVersion; 2] = [
         engine_address: 0x008dba00,
         character_size: 0xdd0,
         engine_size: 0x40,
+        character_list_embedded: false,
     },
 ];
 
@@ -657,9 +682,9 @@ impl Game {
                 // read it all in one go, so it can change while we're reading it.
                 self.characters.clear();
 
-                let list_head: LinkedListHead = self
-                    .emulator
-                    .read(self.engine.character_list as usize, LINKED_LIST_SIZE)?;
+                let head_address = self.version.character_list_head_address(&self.engine);
+                let list_head: LinkedListHead =
+                    self.emulator.read(head_address, LINKED_LIST_SIZE)?;
                 let list_begin = list_head.first as usize;
                 if list_head.count == 0
                     || list_head.count > MAX_EVENT_CHARACTERS
@@ -670,7 +695,7 @@ impl Game {
                     return Ok(());
                 }
 
-                let list_end = self.engine.character_list;
+                let list_end = head_address as u32;
                 let character_size = self.version.character_size;
                 let has_extra = self.version.character_has_extra();
                 let mut entry: LinkedListEntry = self.emulator.read(list_begin, LINKED_LIST_SIZE)?;
