@@ -3,7 +3,7 @@ use std::fs;
 use std::io::Write;
 use std::path::Path;
 
-use encoding_rs::SHIFT_JIS;
+use encoding_rs::{SHIFT_JIS, WINDOWS_1252};
 use strum::EnumString;
 
 use crate::script;
@@ -15,6 +15,8 @@ pub enum Encoding {
     Utf8,
     #[strum(serialize = "shift-jis")]
     ShiftJis,
+    #[strum(serialize = "windows-1252")]
+    Windows1252,
     #[strum(serialize = "detect")]
     Detect,
 }
@@ -24,6 +26,7 @@ impl Encoding {
         match self {
             Self::Utf8 => String::from_utf8_lossy(raw),
             Self::ShiftJis => SHIFT_JIS.decode(raw).0,
+            Self::Windows1252 => WINDOWS_1252.decode(raw).0,
             Self::Detect => {
                 let label = chardet::detect(raw).0;
                 let encoding = encoding_rs::Encoding::for_label(label.as_bytes()).unwrap();
@@ -36,6 +39,7 @@ impl Encoding {
         match self {
             Self::Utf8 => Cow::Borrowed(text.as_bytes()),
             Self::ShiftJis => SHIFT_JIS.encode(text).0,
+            Self::Windows1252 => WINDOWS_1252.encode(text).0,
             Self::Detect => panic!("Can't detect to-encoding"),
         }
     }

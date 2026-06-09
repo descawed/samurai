@@ -1,13 +1,14 @@
 #!/usr/bin/env bash
 set -u
 
-if [ "$#" -ne 2 ]; then
-    echo "Usage: $0 <input_folder> <output_folder>" >&2
+if [ "$#" -lt 2 ] || [ "$#" -gt 3 ]; then
+    echo "Usage: $0 <input_folder> <output_folder> [encoding]" >&2
     exit 1
 fi
 
 input_folder=${1%/}
 output_folder=${2%/}
+encoding=${3:-'shift-jis'}
 
 if [ ! -d "$input_folder" ]; then
     echo "Input folder does not exist: $input_folder" >&2
@@ -25,14 +26,14 @@ while IFS= read -r -d '' input_path; do
         config.h|assign.h|scriptmessage.h)
             # using advanced formatting for config.h causes recursive variable definitions, and assign.h and
             # scriptmessage.h are not regular scripts and contain syntax errors
-            if ! samurai script format -t 4 -e shift-jis -s "$input_path" "$output_path"; then
+            if ! samurai script format -t 4 -e "$encoding" -s "$input_path" "$output_path"; then
               echo "Failed to format: $input_path" >&2
             fi
             ;;
         *.sol|*.lst|*.h)
-            if ! samurai script format -t 4 -c "$input_folder/config.h" -e shift-jis -q "$input_path" "$output_path"; then
+            if ! samurai script format -t 4 -c "$input_folder/config.h" -e "$encoding" -q "$input_path" "$output_path"; then
                 echo "Failed to format: $input_path; trying simple format" >&2
-                if ! samurai script format -t 4 -e shift-jis -s "$input_path" "$output_path"; then
+                if ! samurai script format -t 4 -e "$encoding" -s "$input_path" "$output_path"; then
                   echo "Simple format failed: $input_path" >&2
                 fi
             fi

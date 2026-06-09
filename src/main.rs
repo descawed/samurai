@@ -103,12 +103,12 @@ fn cli() -> Command {
                                 .conflicts_with("config")
                         )
                         .arg(
-                            arg!(-c --config <CONFIG> "Path to config.h. If provided, an include will be added and literal function arguments will be replaced with symbolic constants where appropriate.")
+                            arg!(-c --config <CONFIG> "Path to config.h. If provided, literal function arguments will be replaced with symbolic constants where appropriate.")
                                 .value_parser(clap::value_parser!(PathBuf))
                         )
                         .arg(
-                            arg!(-e --encoding <ENCODING> "The encoding of the input file. Can be utf-8, shift-jis, or detect. The output will always be UTF-8.")
-                                .value_parser(["utf-8", "shift-jis", "detect"])
+                            arg!(-e --encoding <ENCODING> "The encoding of the input file. Can be utf-8, shift-jis, windows-1252, or detect. The output will always be UTF-8.")
+                                .value_parser(["utf-8", "shift-jis", "windows-1252", "detect"])
                                 .default_value("detect")
                         )
                         .arg(
@@ -127,8 +127,8 @@ fn cli() -> Command {
                     Command::new("unformat")
                         .about("Unformat a previously-formatted script for storage in volume.dat")
                         .arg(
-                            arg!(-e --encoding <ENCODING> "The encoding of the output file. Can be utf-8 or shift-jis. The input file must always be UTF-8.")
-                                .value_parser(["utf-8", "shift-jis"])
+                            arg!(-e --encoding <ENCODING> "The encoding of the output file. Can be utf-8, shift-jis, or windows-1252. The input file must always be UTF-8.")
+                                .value_parser(["utf-8", "shift-jis", "windows-1252"])
                                 .default_value("shift-jis")
                         )
                         .arg(
