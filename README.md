@@ -13,6 +13,8 @@ currently provided; use the `help` subcommand or `-h`/`--help` option for detail
 - `samurai script` - Convert and format script files for easier reading. Can also (loosely) reverse the process when
   you're ready to store them back in volume.dat.
 - `samurai debug` - Debug the game running in PCSX2.
+- `samurai autosplitter` - Runs a LiveSplit autosplitter for speedruns of the game.
+- `samurai splits` - Generate .lss splits files for LiveSplit for the speedrun routes used by the autosplitter.
 
 ## Scripts
 
@@ -245,3 +247,21 @@ Flags whose value is 0 (the default value) are grayed out to make flags that hav
 The camera panel allows toggling free camera mode in the game. The recompiler must be disabled in PCSX2's advanced
 settings, otherwise toggling free cam mode will fail. The camera is controlled from the debugger terminal; controls are
 displayed within the panel.
+
+## Autosplitter
+
+The autosplitter uses the debugger back-end to watch the game memory and connects to LiveSplit over TCP to provide
+autosplitting functionality for speedruns of the game. See the [Debugger](#Debugger) section for game version and
+platform support. The TCP server must be started from LiveSplit's "Control" menu (this can be configured to start
+automatically in the LiveSplit settings so you don't have to start it every time).
+
+Per leaderboard rules, the timer starts when pressing start on the character select screen. The rules also say that the
+timer ends when the UI disappears for the Tamagawa death scene, but in SLPS-20178 (generally the fastest version for
+speedruns), the UI does not disappear, so instead, the autosplitter stops the timer when the camera cuts to Tamagawa for
+his death scene (this is roughly when the UI disappears in other versions anyway). Because Tamagawa does not die in
+ending 6, the autosplitter does not currently stop the timer automatically for this ending, so you'll need to do that
+manually. Support for ending 6 will be added in a future version.
+
+During the run, the autosplitter splits on event changes (which generally correspond to map changes). Pre-made splits
+are available in the `splits` directory for supported categories. When using the pre-made splits, the autosplitter will
+only split if you follow the correct route. Otherwise, it will split on every event change.
