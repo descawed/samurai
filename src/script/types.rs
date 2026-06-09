@@ -66,19 +66,13 @@ pub enum EnumType {
     Initialize,
     Null,
     #[default]
-    Any,               // any other type not identified above
-    Select,            // select the type of a following argument
-    SendFuncCharacter, // either a character ID or null depending on the previous select arg
+    Any, // any other type not identified above
     Conflict, // we've detected multiple conflicting types for this value and should treat it as an unknown type
 }
 
 impl EnumType {
     pub fn is_concrete(&self) -> bool {
-        !matches!(self, Self::Any | Self::Conflict) && !self.is_select()
-    }
-
-    pub fn is_select(&self) -> bool {
-        matches!(self, Self::Select | Self::SendFuncCharacter)
+        !matches!(self, Self::Any | Self::Conflict)
     }
 
     /// Choose the more specific of this type and another type
@@ -88,25 +82,10 @@ impl EnumType {
         if *self == Self::Conflict || (self.is_concrete() && other.is_concrete() && *self != other)
         {
             Self::Conflict
-        } else if other == Self::Any
-            || (self.is_concrete() && !other.is_concrete())
-            || (self.is_select() && !other.is_concrete())
-        {
+        } else if other == Self::Any || (self.is_concrete() && !other.is_concrete()) {
             *self
         } else {
             other
-        }
-    }
-
-    pub fn select_type(&self, select_value: Option<i32>) -> Self {
-        match self {
-            Self::SendFuncCharacter => match select_value {
-                None => Self::Any,
-                Some(1) => Self::Null,
-                _ => Self::Character,
-            },
-            _ if !self.is_concrete() => Self::Any,
-            _ => *self,
         }
     }
 
@@ -136,6 +115,100 @@ impl EnumType {
         }
     }
 }
+
+/// How a built-in function argument's type is resolved. Most arguments are `Fixed`, but some
+/// depend on the values of earlier arguments (`Switch`, `SwitchAfter`) or accept a generic
+/// sentinel constant (`INIT`/`ON`/`OFF`) in place of their nominal type (`Sentinel`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum ArgType {
+    Fixed(EnumType),
+    /// Nominal type, but for the listed argument values a generic sentinel constant takes priority
+    /// over a type-specific constant of the same value: `-1` -> `INIT`, `0` -> `OFF`, `1` -> `ON`.
+    /// (e.g. `SetCameraPos`'s `Camera` argument accepts `-1` as `INIT` rather than `CAMERA_INIT`,
+    /// but still resolves `0`/`1` to the real `CAMERA_WORLD`/`CAMERA_CHAR`.)
+    Sentinel { ty: EnumType, accept: &'static [i32] },
+    /// Type chosen by the literal value of argument `on` (e.g. `SetCharAction` argument 2 selects
+    /// the type of argument 3). Resolves to `Any` if argument `on` isn't a known literal.
+    Switch {
+        on: usize,
+        cases: &'static [(i32, EnumType)],
+        default: EnumType,
+    },
+    /// Stateful vararg: `base` until some preceding argument has the value `trigger`, then `then`
+    /// (e.g. `SetEventMode`'s vararg is `Event` until an `INIT` appears, after which it's `Boolean`).
+    SwitchAfter {
+        base: EnumType,
+        trigger: i32,
+        then: EnumType,
+    },
+}
+
+impl Default for ArgType {
+    fn default() -> Self {
+        Self::Fixed(EnumType::default())
+    }
+}
+
+impl From<EnumType> for ArgType {
+    fn from(t: EnumType) -> Self {
+        Self::Fixed(t)
+    }
+}
+
+/// Sentinel-accept lists (argument values for which a generic INIT/ON/OFF constant wins).
+pub(super) const NO_SENTINEL: &[i32] = &[];
+const SENTINEL_INIT: &[i32] = &[-1];
+const SENTINEL_OFF: &[i32] = &[0];
+
+impl ArgType {
+    /// The representative type for propagating into variables, ignoring value-based conditions.
+    pub fn base(&self) -> EnumType {
+        match self {
+            Self::Fixed(t) | Self::Sentinel { ty: t, .. } => *t,
+            Self::Switch { default, .. } => *default,
+            Self::SwitchAfter { base, .. } => *base,
+        }
+    }
+
+    /// Resolve to a concrete type plus the list of argument values eligible for sentinel priority,
+    /// given the literal values of all preceding arguments (`None` where an argument wasn't a
+    /// literal). The accept list is empty for everything but `Sentinel`.
+    pub fn resolve(&self, prior: &[Option<i32>]) -> (EnumType, &'static [i32]) {
+        match self {
+            Self::Fixed(t) => (*t, NO_SENTINEL),
+            Self::Sentinel { ty, accept } => (*ty, accept),
+            Self::Switch { on, cases, default } => match prior.get(*on).copied().flatten() {
+                None => (EnumType::Any, NO_SENTINEL),
+                Some(v) => (
+                    cases
+                        .iter()
+                        .find(|(cv, _)| *cv == v)
+                        .map(|(_, t)| *t)
+                        .unwrap_or(*default),
+                    NO_SENTINEL,
+                ),
+            },
+            Self::SwitchAfter { base, trigger, then } => {
+                if prior.iter().flatten().any(|v| v == trigger) {
+                    (*then, NO_SENTINEL)
+                } else {
+                    (*base, NO_SENTINEL)
+                }
+            }
+        }
+    }
+}
+
+/// Argument-type cases for the value-dependent built-in signatures.
+const SET_CHAR_ACTION_CASES: &[(i32, EnumType)] = &[
+    (6, EnumType::Animation),    // COMMAND_MOTION
+    (12, EnumType::ParamAttack), // COMMAND_ATTACK
+    (13, EnumType::ParamKick),   // COMMAND_KICK
+    (17, EnumType::ParamWeapon), // COMMAND_WEAPON_ON
+    (18, EnumType::ParamWeapon), // COMMAND_WEAPON_OFF
+];
+/// `SendFunc`'s second argument is a character ID unless the first argument is `1` (null).
+const SEND_FUNC_CASES: &[(i32, EnumType)] = &[(1, EnumType::Null)];
 
 #[derive(Debug, PartialEq, Clone)]
 pub(super) struct Variable(pub String, pub Option<Box<Variable>>); // variable with zero or more attribute accesses
@@ -445,8 +518,12 @@ static SIGNATURES: LazyLock<HashMap<&'static str, Signature>> = LazyLock::new(||
         // anyway
         "SetCharDir" => Signature::args(vec![EnumType::Character, EnumType::Character]),
         "SetCharMove" => Signature::args(vec![EnumType::Character, EnumType::Command]),
-        // FIXME: third argument is an animation when second argument is COMMAND_MOTION
-        "SetCharAction" => Signature::args(vec![EnumType::Character, EnumType::Command]),
+        // the third argument's type depends on the COMMAND_* value of the second argument
+        "SetCharAction" => Signature::sig(vec![
+            ArgType::Fixed(EnumType::Character),
+            ArgType::Fixed(EnumType::Command),
+            ArgType::Switch { on: 1, cases: SET_CHAR_ACTION_CASES, default: EnumType::Any },
+        ]),
         "StartCharTrace" => Signature::args(vec![EnumType::Character, EnumType::Character, EnumType::Command]),
         "StopCharTrace" => Signature::args(vec![EnumType::Character]),
         "GetCharStatus" => Signature::args(vec![EnumType::Character, EnumType::Event]),
@@ -495,18 +572,24 @@ static SIGNATURES: LazyLock<HashMap<&'static str, Signature>> = LazyLock::new(||
         "SetCharHiFaceMode" => Signature::args(vec![EnumType::Character, EnumType::Boolean]),
         "SetCharWeapon" => Signature::args(vec![EnumType::Character]),
         "SetBattleCamera" => Signature::args(vec![EnumType::Boolean]),
-        "SetCameraPos" => Signature::args(vec![EnumType::Camera]),
+        // a lone Camera argument of -1 is the generic INIT sentinel, not CAMERA_INIT
+        "SetCameraPos" => Signature::sig(vec![ArgType::Sentinel { ty: EnumType::Camera, accept: SENTINEL_INIT }]),
         "SetBustupCamera" => Signature::args(vec![EnumType::Character]),
         "SetSoloCamera" => Signature::args(vec![EnumType::Character]),
         "SetFixCamera" => Signature::args(vec![EnumType::Character]),
         "SetTwoShotCamera" => Signature::args(vec![EnumType::Character, EnumType::Character]),
         "SetVsCamera" => Signature::args(vec![EnumType::Character, EnumType::Character]),
         // SetRotateCamera has no typed arguments
-        "SetCutCamera" => Signature::args(vec![EnumType::Camera]),
+        "SetCutCamera" => Signature::sig(vec![ArgType::Sentinel { ty: EnumType::Camera, accept: SENTINEL_INIT }]),
         // SetCameraMoveSpeed has no typed arguments
-        "SetEventMode" => Signature::args(vec![EnumType::Character]).vararg(EnumType::Event),
-        "AddEventMode" => Signature::args(vec![EnumType::Character]).vararg(EnumType::Event),
-        "SubEventMode" => Signature::args(vec![EnumType::Character]).vararg(EnumType::Event),
+        // the event-mode vararg is normally an Event, but a leading INIT switches the remaining
+        // arguments to booleans (the reset form `SetEventMode char, INIT, ON/OFF`)
+        "SetEventMode" => Signature::args(vec![EnumType::Character])
+            .vararg_t(ArgType::SwitchAfter { base: EnumType::Event, trigger: -1, then: EnumType::Boolean }),
+        "AddEventMode" => Signature::args(vec![EnumType::Character])
+            .vararg_t(ArgType::SwitchAfter { base: EnumType::Event, trigger: -1, then: EnumType::Boolean }),
+        "SubEventMode" => Signature::args(vec![EnumType::Character])
+            .vararg_t(ArgType::SwitchAfter { base: EnumType::Event, trigger: -1, then: EnumType::Boolean }),
         "SetLineAction" => Signature::args(vec![EnumType::Character]),
         "SetCharWatch" => Signature::args(vec![EnumType::Character, EnumType::Character, EnumType::Watch, EnumType::Any, EnumType::Object]),
         "SetTimeAction" => Signature::args(vec![EnumType::Character, EnumType::Character]),
@@ -542,8 +625,15 @@ static SIGNATURES: LazyLock<HashMap<&'static str, Signature>> = LazyLock::new(||
         "SetAddCharScript" => Signature::args(vec![EnumType::Character]),
         "SetAddCharScriptList" => Signature::args(vec![EnumType::Any]).vararg(EnumType::Character),
         // SetVarInt, GetVarInt, SetVarString, GetVarString have no typed arguments
-        "SendFunc" => Signature::args(vec![EnumType::Select, EnumType::SendFuncCharacter]),
-        "SendFunc2" => Signature::args(vec![EnumType::Select, EnumType::SendFuncCharacter]),
+        // the second argument is a character ID unless the first (selector) argument is 1 (null)
+        "SendFunc" => Signature::sig(vec![
+            ArgType::Fixed(EnumType::Any),
+            ArgType::Switch { on: 0, cases: SEND_FUNC_CASES, default: EnumType::Character },
+        ]),
+        "SendFunc2" => Signature::sig(vec![
+            ArgType::Fixed(EnumType::Any),
+            ArgType::Switch { on: 0, cases: SEND_FUNC_CASES, default: EnumType::Character },
+        ]),
         "SetCinemaScope" => Signature::args(vec![EnumType::Boolean]),
         // SetFontColor, SetSerifWindowColor, SetSerifFrameColor, SetFilePath, ReadEventCharList have no typed arguments
         "SetEventUseCharList" => Signature::varargs(EnumType::Character),
@@ -573,7 +663,12 @@ static SIGNATURES: LazyLock<HashMap<&'static str, Signature>> = LazyLock::new(||
         "SetAIGroupRelation" => Signature::args(vec![EnumType::Footing, EnumType::Footing, EnumType::Relation]),
         "GetAIGroupRelation" => Signature::args(vec![EnumType::Footing, EnumType::Footing]).returns(EnumType::Relation),
         "Say" => Signature::args(vec![EnumType::Character, EnumType::Character, EnumType::Any, EnumType::Any, EnumType::Any, EnumType::Say]),
-        "SetSayMotion" => Signature::args(vec![EnumType::Character, EnumType::Animation]),
+        // arg 2 is an animation, except value 0 which is the OFF sentinel; arg 3 is a boolean
+        "SetSayMotion" => Signature::sig(vec![
+            ArgType::Fixed(EnumType::Character),
+            ArgType::Sentinel { ty: EnumType::Animation, accept: SENTINEL_OFF },
+            ArgType::Fixed(EnumType::Boolean),
+        ]),
         "SetTalkSelect" => Signature::args(vec![EnumType::Character]),
         "SayGroup" => Signature::args(vec![EnumType::Character, EnumType::Any, EnumType::Any, EnumType::Any, EnumType::Say]).vararg(EnumType::Character),
         "SetSayPos" => Signature::args(vec![EnumType::Character]),
@@ -616,16 +711,26 @@ static SIGNATURES: LazyLock<HashMap<&'static str, Signature>> = LazyLock::new(||
 
 #[derive(Debug, Default, PartialEq, Eq, Clone)]
 pub(super) struct Signature {
-    arguments: Vec<EnumType>,
-    vararg: EnumType,
+    arguments: Vec<ArgType>,
+    vararg: ArgType,
     return_type: EnumType,
 }
 
 impl Signature {
+    /// Build a signature from a list of plain (`Fixed`) argument types.
     pub fn args(arguments: Vec<EnumType>) -> Self {
         Self {
+            arguments: arguments.into_iter().map(ArgType::Fixed).collect(),
+            vararg: ArgType::default(),
+            return_type: EnumType::default(),
+        }
+    }
+
+    /// Build a signature whose arguments use the richer `ArgType` resolution rules.
+    pub fn sig(arguments: Vec<ArgType>) -> Self {
+        Self {
             arguments,
-            vararg: EnumType::default(),
+            vararg: ArgType::default(),
             return_type: EnumType::default(),
         }
     }
@@ -633,12 +738,17 @@ impl Signature {
     pub fn varargs(arg_type: EnumType) -> Self {
         Self {
             arguments: vec![],
-            vararg: arg_type,
+            vararg: ArgType::Fixed(arg_type),
             return_type: EnumType::default(),
         }
     }
 
     pub fn vararg(mut self, arg_type: EnumType) -> Self {
+        self.vararg = ArgType::Fixed(arg_type);
+        self
+    }
+
+    pub fn vararg_t(mut self, arg_type: ArgType) -> Self {
         self.vararg = arg_type;
         self
     }
@@ -648,22 +758,30 @@ impl Signature {
         self
     }
 
+    /// The `ArgType` rule for the argument at `index`, falling back to the vararg rule for
+    /// positions past the end of the fixed argument list.
+    pub fn arg_type(&self, index: usize) -> ArgType {
+        self.arguments
+            .get(index)
+            .cloned()
+            .unwrap_or_else(|| self.vararg.clone())
+    }
+
     pub fn get_argument(&self, index: usize) -> EnumType {
-        self.arguments.get(index).copied().unwrap_or_default()
+        self.arguments
+            .get(index)
+            .map(ArgType::base)
+            .unwrap_or_default()
     }
 
     pub fn add_argument(&mut self, index: usize, arg_type: EnumType) -> EnumType {
         if index >= self.arguments.len() {
-            self.arguments.resize_with(index + 1, Default::default);
+            self.arguments.resize_with(index + 1, ArgType::default);
         }
-        self.arguments[index].update(arg_type)
-    }
-
-    pub fn iter(&self) -> impl Iterator<Item = EnumType> + '_ {
-        self.arguments
-            .iter()
-            .copied()
-            .chain(std::iter::repeat(self.vararg))
+        // arguments inferred for user-defined functions are always plain `Fixed` types
+        let new_type = self.arguments[index].base().choose(arg_type);
+        self.arguments[index] = ArgType::Fixed(new_type);
+        new_type
     }
 
     pub fn return_type(&self) -> EnumType {
@@ -677,14 +795,20 @@ impl Signature {
     }
 
     pub fn merge<T: Deref<Target = Self>>(&mut self, other: T) {
-        for (our_arg, &their_arg) in self.arguments.iter_mut().zip(other.arguments.iter()) {
-            our_arg.update(their_arg);
+        // only plain `Fixed` arguments (inferred user functions) are merged; conditional built-in
+        // rules are preserved as-is
+        for (our_arg, their_arg) in self.arguments.iter_mut().zip(other.arguments.iter()) {
+            if let ArgType::Fixed(our) = our_arg {
+                *our = our.choose(their_arg.base());
+            }
         }
         if other.arguments.len() > self.arguments.len() {
             self.arguments
                 .extend_from_slice(&other.arguments[self.arguments.len()..]);
         }
-        self.vararg.update(other.vararg);
+        if let ArgType::Fixed(vararg) = &mut self.vararg {
+            *vararg = vararg.choose(other.vararg.base());
+        }
         self.return_type.update(other.return_type);
     }
 }
