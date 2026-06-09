@@ -358,6 +358,16 @@ impl Display for Statement {
 
 pub(super) fn parser<'src>()
 -> impl Parser<'src, &'src str, Block, extra::Err<Rich<'src, char, SimpleSpan<usize>>>> {
+    // padding that skips whitespace as well as `//` line comments, which run to the end of the
+    // line. comments aren't represented in the AST; they're simply discarded like whitespace.
+    let pad = {
+        let comment = just("//")
+            .then(any().and_is(just('\n').not()).repeated())
+            .ignored();
+        let whitespace = any().filter(|c: &char| c.is_whitespace()).ignored();
+        whitespace.or(comment).repeated().ignored()
+    };
+
     let int = text::digits(10)
         .to_slice()
         .from_str()
@@ -393,7 +403,7 @@ pub(super) fn parser<'src>()
     //  identifier alone and no #. need more research.
     let var = recursive(|var| {
         just('#')
-            .padded() // at least one script has a variable usage with a space between the # and the identifier
+            .padded_by(pad.clone()) // at least one script has a variable usage with a space between the # and the identifier
             .ignore_then(
                 one_of(IDENTIFIER_CHARACTERS)
                     .repeated()
@@ -414,7 +424,7 @@ pub(super) fn parser<'src>()
 
     // slightly redundant global parsing to reduce recursion in expressions
     let global_var = just('$')
-        .padded()
+        .padded_by(pad.clone())
         .repeated()
         .at_least(1)
         .count()
@@ -427,7 +437,7 @@ pub(super) fn parser<'src>()
             out
         });
 
-    let any_var = global_var.or(var.clone()).padded();
+    let any_var = global_var.or(var.clone()).padded_by(pad.clone());
 
     let atom = var.or(string).or(neg_num).or(num);
 
@@ -435,17 +445,17 @@ pub(super) fn parser<'src>()
         // I used to use delimited_by here, but that seemed to require at least one statement in the
         // block to parse correctly, and we need to support empty blocks
         let block = just('{')
-            .padded()
+            .padded_by(pad.clone())
             .ignore_then(stmt.repeated().collect::<Vec<_>>())
-            .then_ignore(just('}').padded())
-            .padded();
+            .then_ignore(just('}').padded_by(pad.clone()))
+            .padded_by(pad.clone());
 
         let expr = recursive(|expr| {
             let args = expr
                 .clone()
-                .separated_by(just(',').padded().repeated().at_least(1))
+                .separated_by(just(',').padded_by(pad.clone()).repeated().at_least(1))
                 .collect()
-                .then_ignore(just(',').padded().or_not()); // allow trailing comma
+                .then_ignore(just(',').padded_by(pad.clone()).or_not()); // allow trailing comma
 
             // https://github.com/zesterer/chumsky/discussions/58
             // if we let the left-hand side of a method call be any expression, we get infinite recursion
@@ -457,7 +467,7 @@ pub(super) fn parser<'src>()
                 .clone()
                 .or(expr.clone().delimited_by(just('('), just(')')));
             let method = delimited
-                .then(text::ident().or(one_of("=<>").to_slice()).padded())
+                .then(text::ident().or(one_of("=<>").to_slice()).padded_by(pad.clone()))
                 .then(args.clone())
                 .map(|((o, m), a): ((Expression, &str), Vec<Expression>)| {
                     Expression::MethodCall(Box::new(o), String::from(m), a)
@@ -476,11 +486,11 @@ pub(super) fn parser<'src>()
                 .map(|(l, r)| Expression::ValueDeclaration(Box::new(l), Box::new(r)));
 
             let ternary = just("?I")
-                .padded()
+                .padded_by(pad.clone())
                 .ignore_then(expr.clone())
-                .then_ignore(just(',').padded())
+                .then_ignore(just(',').padded_by(pad.clone()))
                 .then(expr.clone())
-                .then_ignore(just(',').padded())
+                .then_ignore(just(',').padded_by(pad.clone()))
                 .then(expr.clone())
                 .map(|((c, t), f)| {
                     Expression::TernaryConditional(Box::new(c), Box::new(t), Box::new(f))
@@ -491,18 +501,18 @@ pub(super) fn parser<'src>()
             // in-game, but for compatibility purposes, we'll parse it.
             let func_def = just('?')
                 .then_ignore(just('F').or_not())
-                .padded()
+                .padded_by(pad.clone())
                 .or_not()
                 .ignore_then(
                     just('#')
                         .or_not()
                         .ignore_then(text::ident().to_slice())
                         .map(String::from)
-                        .padded()
+                        .padded_by(pad.clone())
                         .separated_by(just(','))
                         .collect()
                         .delimited_by(just('('), just(')'))
-                        .padded()
+                        .padded_by(pad.clone())
                         .or_not(),
                 )
                 .then(block.clone())
@@ -510,14 +520,14 @@ pub(super) fn parser<'src>()
 
             let function =
                 text::ident()
-                    .padded()
+                    .padded_by(pad.clone())
                     .then(args)
                     .map(|(f, a): (&str, Vec<Expression>)| {
                         Expression::FunctionCall(String::from(f), a)
                     });
 
             let global = just('$')
-                .padded()
+                .padded_by(pad.clone())
                 .ignore_then(expr.clone())
                 .map(|e| Expression::Global(Box::new(e)));
 
@@ -527,7 +537,7 @@ pub(super) fn parser<'src>()
             // operator or method name, obscuring the true source of the error. to prevent that,
             // we only allow parsing an atom if it's not part of a declaration or method call.
             let decl_or_method =
-                any_var.then_ignore(text::ident().or(one_of("=<>|:").to_slice()).padded());
+                any_var.then_ignore(text::ident().or(one_of("=<>|:").to_slice()).padded_by(pad.clone()));
 
             func_def
                 .or(ref_decl)
@@ -538,10 +548,10 @@ pub(super) fn parser<'src>()
                 .or(method)
                 .or(atom.and_is(decl_or_method.not()))
                 .or(expr.delimited_by(just('('), just(')')))
-                .padded()
+                .padded_by(pad.clone())
         });
 
-        let semicolon = just(';').padded();
+        let semicolon = just(';').padded_by(pad.clone());
 
         let condition_block = recursive(|condition_block| {
             expr.clone()
@@ -553,7 +563,7 @@ pub(super) fn parser<'src>()
                 })
         });
         let conditional = just("?i")
-            .padded()
+            .padded_by(pad.clone())
             .ignore_then(condition_block)
             .then(block.clone().or_not())
             .then_ignore(semicolon.or_not())
@@ -567,30 +577,30 @@ pub(super) fn parser<'src>()
             .map(|(e, b)| Statement::ObjectInitialization(e, b.into()));
 
         let while_loop = just("?W")
-            .ignore_then(just('{').padded())
+            .ignore_then(just('{').padded_by(pad.clone()))
             .ignore_then(expr.clone())
-            .then_ignore(just('}').padded())
-            .then_ignore(just(',').padded())
+            .then_ignore(just('}').padded_by(pad.clone()))
+            .then_ignore(just(',').padded_by(pad.clone()))
             .then(block)
             .then_ignore(semicolon.or_not())
             .map(|(e, b)| Statement::WhileLoop(e, b.into()));
 
         let return_stmt = just("/r")
             .then_ignore(text::ident().or_not())
-            .padded()
+            .padded_by(pad.clone())
             // the last statement in a block doesn't have to have a semicolon
-            .then_ignore(semicolon.or(just('}').padded().rewind()))
+            .then_ignore(semicolon.or(just('}').padded_by(pad.clone()).rewind()))
             .to(Statement::Return);
 
         let break_stmt = just("/b")
             .then_ignore(text::ident().or_not())
-            .padded()
+            .padded_by(pad.clone())
             // the last statement in a block doesn't have to have a semicolon
-            .then_ignore(semicolon.or(just('}').padded().rewind()))
+            .then_ignore(semicolon.or(just('}').padded_by(pad.clone()).rewind()))
             .to(Statement::Break);
 
         let stmt_expr = expr
-            .then_ignore(semicolon.or(just('}').padded().rewind()))
+            .then_ignore(semicolon.or(just('}').padded_by(pad.clone()).rewind()))
             .map(Statement::Expression);
 
         let empty_stmt = semicolon.to(Statement::Empty);
@@ -606,6 +616,8 @@ pub(super) fn parser<'src>()
 
     stmt.repeated()
         .collect()
+        // pad the whole program so a script consisting only of comments/whitespace still parses
+        .padded_by(pad.clone())
         .then_ignore(end())
         .map(|b| Block(b, None))
 }
@@ -1259,5 +1271,19 @@ mod tests {
             panic!("Statement was not a global");
         };
         assert!(matches!(*value, Expression::MethodCall(_, _, _)));
+    }
+
+    #[test]
+    fn test_line_comment() {
+        // comments should be skipped like whitespace, wherever they appear
+        let stmt = one_statement("// leading comment\n4 // trailing comment\n;");
+        assert!(matches!(stmt, Statement::Expression(Expression::Int(4))));
+    }
+
+    #[test]
+    fn test_comment_only() {
+        let parser = parser();
+        let result = parser.parse("// just a comment\n").unwrap();
+        assert!(result.is_empty());
     }
 }

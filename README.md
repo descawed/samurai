@@ -30,6 +30,8 @@ The `script` directory in this repo contains some utilities for working with scr
 contains a VS Code extension providing syntax highlighting for this language. `format-scripts.sh` is a shell script
 which can be used to batch-format all the game's scripts. It takes two arguments: an input directory, which should be
 the path to the game's `script` directory, and an output directory where the formatted scripts will be written.
+`decode-scripts.sh` takes the same arguments but only decodes the scripts from Shift JIS to UTF-8 without applying
+formatting. This is intended for the PSP version, whose scripts have not been preprocessed like the other versions.
 
 ### Syntax
 
@@ -42,7 +44,7 @@ the path to the game's `script` directory, and an output directory where the for
 - Text enclosed in double quotes forms a string literal: `"abcd"`. The escape sequence `\n` is supported to indicate
   a newline. I'm not sure if it's possible to escape quotes as I haven't seen any examples of strings that include a
   quote character.
-- Comments start with `//` and extend to the end of the line. The script formatter does not currently support comments.
+- Comments start with `//` and extend to the end of the line. The script formatter strips comments.
 - Variables generally start with `#` (`#MyVariable`) while function names are generally bare identifiers (`MyFunc`).
   This is not a hard requirement, though – variables may omit the `#` prefix and functions may include it.
 - Both variable and function names may be prefixed with `$` to search for or define them in the global scope:
