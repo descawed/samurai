@@ -106,16 +106,16 @@ impl Analyzer {
         args: &mut [Expression],
         scope: SharedScope,
     ) {
-        let mut select = None;
-        for (arg_expr, arg_type) in args.iter_mut().zip(signature.borrow().iter()) {
-            if let ((&Expression::Int(value), _), EnumType::Select) =
-                (arg_expr.unwrap_global(), arg_type)
-            {
-                select = Some(value);
-                continue;
-            }
+        let mut prior: Vec<Option<i32>> = Vec::with_capacity(args.len());
+        for (i, arg_expr) in args.iter_mut().enumerate() {
+            let arg_type = { signature.borrow().arg_type(i) };
+            let (final_arg_type, _sentinel) = arg_type.resolve(&prior);
+            let literal = match arg_expr.unwrap_global().0 {
+                &Expression::Int(value) => Some(value),
+                _ => None,
+            };
+            prior.push(literal);
 
-            let final_arg_type = arg_type.select_type(select);
             let (inner_expr, is_global) = arg_expr.unwrap_global_mut();
             match inner_expr {
                 Expression::Variable(var) => {
@@ -252,12 +252,12 @@ impl Analyzer {
                 let function_sig = match scope.borrow().lookup_function(var, is_global) {
                     Some(callback_sig) => {
                         // if this is a known function, push the types into the function scope
-                        for (arg_name, arg_type) in args.iter().zip(callback_sig.borrow().iter()) {
+                        for (i, arg_name) in args.iter().enumerate() {
                             self.define(
                                 &mut func_scope,
                                 &arg_name.as_str().into(),
                                 false,
-                                ScriptValue::Scalar(arg_type),
+                                ScriptValue::Scalar(callback_sig.borrow().arg_type(i).base()),
                             );
                         }
                         callback_sig

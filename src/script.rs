@@ -9,7 +9,7 @@ mod types;
 
 use analysis::Analyzer;
 use parse::{Block, Conditional, Expression, Statement};
-use types::{EnumType, ScriptValue, SharedScope, SharedSignature, Variable};
+use types::{EnumType, NO_SENTINEL, ScriptValue, SharedScope, SharedSignature, Variable};
 
 fn start_line(
     line_start: &mut bool,
@@ -172,12 +172,25 @@ impl ScriptFormatter {
         self.made_changes = false;
     }
 
-    fn get_constant(&self, value_type: EnumType, value: i32) -> Option<Expression> {
+    fn get_constant(&self, value_type: EnumType, value: i32, accept: &[i32]) -> Option<Expression> {
         if !value_type.is_concrete() {
             return None;
         }
 
         let config = self.config.as_ref()?;
+        // when this value is sentinel-eligible, a generic INIT/ON/OFF constant of the same value
+        // wins over a type-specific constant that happens to share that value
+        if accept.contains(&value) {
+            let generic = match value {
+                -1 => config.get(&(EnumType::Initialize, -1)),
+                0 => config.get(&(EnumType::Boolean, 0)), // OFF
+                1 => config.get(&(EnumType::Boolean, 1)), // ON
+                _ => None,
+            };
+            if let Some(name) = generic {
+                return Some(Expression::new_var(name.clone()));
+            }
+        }
         config
             .get(&(value_type, value))
             .or_else(|| match value {
@@ -188,9 +201,8 @@ impl ScriptFormatter {
             .map(|s| Expression::new_var(s.clone()))
     }
 
-    fn use_constant(&mut self, value_type: EnumType, expr: &mut Expression, select: Option<i32>) {
-        let actual_type = value_type.select_type(select);
-        if !actual_type.is_concrete() {
+    fn use_constant(&mut self, value_type: EnumType, expr: &mut Expression, accept: &[i32]) {
+        if !value_type.is_concrete() {
             return;
         }
 
@@ -198,7 +210,7 @@ impl ScriptFormatter {
             return;
         };
 
-        match self.get_constant(actual_type, value) {
+        match self.get_constant(value_type, value, accept) {
             Some(constant) => {
                 // if we found a match for a symbolic constant, replace the literal expression with one
                 // referencing the constant
@@ -209,7 +221,7 @@ impl ScriptFormatter {
                 if !self.quiet {
                     println!(
                         "Warning: unexpected value {} for type {:?}",
-                        value, actual_type,
+                        value, value_type,
                     );
                 }
             }
@@ -217,15 +229,17 @@ impl ScriptFormatter {
     }
 
     fn process_call(&mut self, args: &mut [Expression], signature: &SharedSignature) {
-        let mut select = None;
-        for (arg_expr, arg_type) in args.iter_mut().zip(signature.borrow().iter()) {
-            if let (&Expression::Int(arg_value), EnumType::Select) =
-                (arg_expr.unwrap_global().0, arg_type)
-            {
-                select = Some(arg_value);
-            }
+        let mut prior: Vec<Option<i32>> = Vec::with_capacity(args.len());
+        for (i, arg_expr) in args.iter_mut().enumerate() {
+            let arg_type = { signature.borrow().arg_type(i) };
+            let (resolved, accept) = arg_type.resolve(&prior);
+            // record this argument's literal value before it may be replaced with a constant
+            prior.push(match arg_expr.unwrap_global().0 {
+                &Expression::Int(value) => Some(value),
+                _ => None,
+            });
 
-            self.use_constant(arg_type, arg_expr, select);
+            self.use_constant(resolved, arg_expr, accept);
         }
     }
 
@@ -233,7 +247,7 @@ impl ScriptFormatter {
         match (args.len(), method, object) {
             // if this is a comparison or assignment to a scalar with a single argument
             (1, "eq" | "lt" | "le" | "gt" | "ge" | "<" | ">" | "=", _) => {
-                self.use_constant(object.get_type(), &mut args[0], None);
+                self.use_constant(object.get_type(), &mut args[0], NO_SENTINEL);
             }
             (_, _, ScriptValue::Object(scope)) => {
                 if let Some(sig) = scope.borrow().lookup_own_function(method) {
@@ -268,7 +282,7 @@ impl ScriptFormatter {
                 if let (Expression::Variable(var), is_global_var) = lhs.unwrap_global()
                     && let Some(obj) = scope.borrow().lookup(var, is_global || is_global_var)
                 {
-                    self.use_constant(obj.get_type(), rhs, None);
+                    self.use_constant(obj.get_type(), rhs, NO_SENTINEL);
                 }
             }
             _ => (),
@@ -396,5 +410,284 @@ impl ScriptFormatter {
 impl Default for ScriptFormatter {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+/// Type-inference scoring harness (Step 0 of plan.md).
+///
+/// Measures how accurately the formatter restores the symbolic constants the original
+/// developers used, using the PSP release (constants intact) as ground truth.
+///
+/// Methodology — a self-referential round-trip that isolates inference from all other noise:
+///   * `reference` = current_formatter(ground_truth, no config) — the devs' real constants,
+///     formatted by the *current* code.
+///   * `ours`      = current_formatter(strip_constants(ground_truth), config) — what our
+///     inference restores from a fully literal (preprocessed-equivalent) input.
+/// Because both sides run through the same formatter on identical logic, their token streams
+/// align 1:1 and the only differences are constant-vs-literal at each position. This removes
+/// inter-version logic changes and formatter-version differences from the metric.
+///
+/// Run on demand (it needs the external corpus and is slow, so it's `#[ignore]`d):
+///   SAMURAI_SCRIPTS_DIR=/path/to/samurai_scripts cargo test --release scorecard -- --ignored --nocapture
+#[cfg(test)]
+mod scorecard {
+    use std::collections::HashMap;
+    use std::path::PathBuf;
+
+    use regex::Regex;
+    use walkdir::WalkDir;
+
+    use super::ScriptFormatter;
+    use super::types::EnumType;
+
+    struct Config {
+        /// Mirrors `ScriptFormatter::use_config`: only int-valued, typed constants.
+        int_map: HashMap<(EnumType, i32), String>,
+        /// Every named define (int and float) -> its literal text, for stripping.
+        value_text: HashMap<String, String>,
+        /// Every named define -> its numeric value, for same-value comparisons.
+        value_num: HashMap<String, f64>,
+    }
+
+    /// Parse config.h leniently, line by line, so a malformed line (e.g. the unterminated
+    /// `( MTASG_BASIC )` on line 33) doesn't abort the whole load the way the real parser does.
+    fn load_config(path: &std::path::Path) -> Config {
+        let text = String::from_utf8_lossy(&std::fs::read(path).expect("read config.h")).into_owned();
+        let line_re = Regex::new(r"(?m)^\s*#([A-Za-z_][A-Za-z0-9_]*)\s*\|\s*(-?\d+(?:\.\d+)?)\s*;").unwrap();
+        let mut int_map = HashMap::new();
+        let mut value_text = HashMap::new();
+        let mut value_num = HashMap::new();
+        for caps in line_re.captures_iter(&text) {
+            let name = caps[1].to_string();
+            let val_str = caps[2].to_string();
+            let num: f64 = val_str.parse().unwrap();
+            value_num.insert(name.clone(), num);
+            // last write wins, matching HashMap insertion order in use_config
+            if !val_str.contains('.')
+                && let Ok(ival) = val_str.parse::<i32>()
+                && let Some(t) = EnumType::get_constant_type(&name)
+            {
+                int_map.insert((t, ival), name.clone());
+            }
+            value_text.insert(name, val_str);
+        }
+        Config { int_map, value_text, value_num }
+    }
+
+    /// Replace every `$?#NAME` config-constant reference with its literal value, leaving strings,
+    /// non-constant variables, and all other tokens (and whitespace) untouched.
+    fn strip_constants(text: &str, cfg: &Config) -> String {
+        let re = Regex::new(r#""[^"]*"|\$?#[A-Za-z_][A-Za-z0-9_]*"#).unwrap();
+        re.replace_all(text, |caps: &regex::Captures| {
+            let m = &caps[0];
+            if m.starts_with('"') {
+                return m.to_string();
+            }
+            let name = m.trim_start_matches('$').trim_start_matches('#');
+            match cfg.value_text.get(name) {
+                Some(v) => v.clone(),
+                None => m.to_string(),
+            }
+        })
+        .into_owned()
+    }
+
+    fn tokenize(text: &str) -> Vec<String> {
+        let re = Regex::new(r#"\$?#?[A-Za-z_][A-Za-z0-9_]*|-?\d+\.\d+|-?\d+|"[^"]*"|\S"#).unwrap();
+        re.find_iter(text).map(|m| m.as_str().to_string()).collect()
+    }
+
+    /// strip the optional global `$` prefix
+    fn undollar(tok: &str) -> &str {
+        tok.strip_prefix('$').unwrap_or(tok)
+    }
+
+    /// constant name if this token references a known config constant, else None
+    fn const_name<'a>(tok: &'a str, cfg: &Config) -> Option<&'a str> {
+        let name = undollar(tok).strip_prefix('#')?;
+        cfg.value_text.contains_key(name).then_some(name)
+    }
+
+    fn is_number(tok: &str) -> bool {
+        let t = undollar(tok);
+        !t.is_empty() && t.bytes().next().map(|b| b == b'-' || b.is_ascii_digit()).unwrap_or(false)
+            && t.bytes().all(|b| b == b'-' || b == b'.' || b.is_ascii_digit())
+    }
+
+    /// approximate "enclosing call": nearest preceding bare identifier (a function/method
+    /// name), skipping `#`-prefixed variables/constants, operators, and method keywords.
+    fn func_of(tokens: &[String], idx: usize) -> String {
+        for t in tokens[..idx].iter().rev() {
+            let u = undollar(t);
+            if u.starts_with('#') {
+                continue; // variable or constant, not a call name
+            }
+            if u.chars().next().map(|c| c.is_ascii_alphabetic()).unwrap_or(false)
+                && !matches!(u, "eq" | "ne" | "lt" | "le" | "gt" | "ge" | "and" | "or" | "not" | "at" | "add" | "sub" | "mul" | "div" | "list")
+            {
+                return u.to_string();
+            }
+        }
+        "?".to_string()
+    }
+
+    #[derive(Default)]
+    struct Counts {
+        // denominator: positions where the dev used a config constant
+        ref_constants: usize,
+        correct: usize,
+        missed: usize,       // ours = bare literal (inference produced nothing)
+        missed_float: usize, // subset of missed where the true constant is float-valued
+        sentinel: usize,     // ours = a different constant with the SAME value (A)
+        wrong: usize,        // ours = a different constant with a DIFFERENT value (B)
+        over: usize,         // ref = literal but ours = constant (over-application)
+        structural: usize,   // unexpected misalignment at this position
+        ref_dollar: usize,   // ref constant carried a `$` prefix
+    }
+
+    fn topn(map: &HashMap<String, usize>, n: usize) -> Vec<(String, usize)> {
+        let mut v: Vec<_> = map.iter().map(|(k, c)| (k.clone(), *c)).collect();
+        v.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+        v.truncate(n);
+        v
+    }
+
+    fn family(name: &str) -> String {
+        name.split('_').next().unwrap_or(name).to_string()
+    }
+
+    #[test]
+    #[ignore = "needs the external samurai_scripts corpus; run explicitly with --ignored"]
+    fn scorecard() {
+        let dir = PathBuf::from(std::env::var("SAMURAI_SCRIPTS_DIR").expect("SAMURAI_SCRIPTS_DIR env var to be set"));
+        let cfg = load_config(&dir.join("config.h"));
+        eprintln!(
+            "loaded config: {} typed-int constants, {} total named defines",
+            cfg.int_map.len(),
+            cfg.value_text.len()
+        );
+
+        let mut c = Counts::default();
+        let mut parse_errors = 0usize;
+        let mut structural_files = 0usize;
+        let mut files = 0usize;
+        let mut missed_family: HashMap<String, usize> = HashMap::new();
+        let mut missed_func: HashMap<String, usize> = HashMap::new();
+        let mut sentinel_pair: HashMap<String, usize> = HashMap::new(); // "ref->our" by family
+        let mut sentinel_func: HashMap<String, usize> = HashMap::new();
+        let mut wrong_func: HashMap<String, usize> = HashMap::new();
+
+        let mut paths: Vec<_> = WalkDir::new(dir.join("samurai"))
+            .into_iter()
+            .filter_map(|e| e.ok())
+            .filter(|e| {
+                let p = e.path();
+                p.is_file()
+                    && matches!(p.extension().and_then(|s| s.to_str()), Some("sol") | Some("lst"))
+            })
+            .map(|e| e.path().to_path_buf())
+            .collect();
+        paths.sort();
+
+        for path in &paths {
+            let text = String::from_utf8_lossy(&std::fs::read(path).unwrap()).into_owned();
+
+            // reference: format ground truth as-is (constants preserved), no inference
+            let mut ref_fmt = ScriptFormatter::new();
+            ref_fmt.set_quiet(true);
+            let reference = match ref_fmt.format_script(&text, None) {
+                Ok(s) => s,
+                Err(_) => {
+                    parse_errors += 1;
+                    continue;
+                }
+            };
+
+            // ours: strip constants to literals, then run real inference
+            let literal = strip_constants(&text, &cfg);
+            let mut our_fmt = ScriptFormatter::new();
+            our_fmt.set_quiet(true);
+            our_fmt.config = Some(cfg.int_map.clone());
+            let ours = match our_fmt.format_script(&literal, None) {
+                Ok(s) => s,
+                Err(_) => {
+                    parse_errors += 1;
+                    continue;
+                }
+            };
+
+            let rt = tokenize(&reference);
+            let ot = tokenize(&ours);
+            files += 1;
+            if rt.len() != ot.len() {
+                structural_files += 1;
+                continue;
+            }
+
+            for i in 0..rt.len() {
+                let (r, o) = (&rt[i], &ot[i]);
+                let rname = const_name(r, &cfg);
+                let oname = const_name(o, &cfg);
+
+                if let Some(rn) = rname {
+                    c.ref_constants += 1;
+                    if r.starts_with('$') {
+                        c.ref_dollar += 1;
+                    }
+                    if undollar(r) == undollar(o) {
+                        c.correct += 1;
+                        continue;
+                    }
+                    if is_number(o) {
+                        c.missed += 1;
+                        if cfg.value_num.get(rn).map(|v| v.fract() != 0.0).unwrap_or(false) {
+                            c.missed_float += 1;
+                        }
+                        *missed_family.entry(family(rn)).or_default() += 1;
+                        *missed_func.entry(func_of(&rt, i)).or_default() += 1;
+                    } else if let Some(on) = oname {
+                        let same = cfg.value_num.get(rn) == cfg.value_num.get(on);
+                        if same {
+                            c.sentinel += 1;
+                            *sentinel_pair.entry(format!("{}->{}", family(rn), family(on))).or_default() += 1;
+                            *sentinel_func.entry(func_of(&rt, i)).or_default() += 1;
+                        } else {
+                            c.wrong += 1;
+                            *wrong_func.entry(func_of(&rt, i)).or_default() += 1;
+                        }
+                    } else {
+                        c.structural += 1;
+                    }
+                } else if oname.is_some() && is_number(r) {
+                    c.over += 1;
+                } else if undollar(r) != undollar(o) {
+                    c.structural += 1;
+                }
+            }
+        }
+
+        let pct = |n: usize| if c.ref_constants == 0 { 0.0 } else { 100.0 * n as f64 / c.ref_constants as f64 };
+        println!("\n==================== INFERENCE SCORECARD ====================");
+        println!("files scored: {files}   parse errors: {parse_errors}   structural-mismatch files (skipped): {structural_files}");
+        println!("\nconstant positions (denominator): {}", c.ref_constants);
+        println!("  correct        : {:7}  ({:5.2}%)   <-- headline accuracy", c.correct, pct(c.correct));
+        println!("  missed (C)     : {:7}  ({:5.2}%)   left a literal; of which float: {} ({:.2}%)", c.missed, pct(c.missed), c.missed_float, pct(c.missed_float));
+        println!("  sentinel (A)   : {:7}  ({:5.2}%)   wrong const, SAME value (conditional/sentinel)", c.sentinel, pct(c.sentinel));
+        println!("  wrong (B)      : {:7}  ({:5.2}%)   wrong const, DIFFERENT value", c.wrong, pct(c.wrong));
+        println!("  structural     : {:7}  ({:5.2}%)", c.structural, pct(c.structural));
+        println!("over-application : {:7}              produced a constant where dev wrote a literal", c.over);
+        println!("\n$-prefix (cosmetic, excluded above): {} of {} ref constants carried `$` ({:.2}%); current formatter emits none.", c.ref_dollar, c.ref_constants, pct(c.ref_dollar));
+
+        println!("\n-- missed (C) by constant family --");
+        for (k, v) in topn(&missed_family, 20) { println!("  {v:6}  {k}"); }
+        println!("\n-- missed (C) by enclosing call --");
+        for (k, v) in topn(&missed_func, 20) { println!("  {v:6}  {k}"); }
+        println!("\n-- sentinel (A) family swaps (ref->our) --");
+        for (k, v) in topn(&sentinel_pair, 20) { println!("  {v:6}  {k}"); }
+        println!("\n-- sentinel (A) by enclosing call --");
+        for (k, v) in topn(&sentinel_func, 15) { println!("  {v:6}  {k}"); }
+        println!("\n-- wrong (B) by enclosing call --");
+        for (k, v) in topn(&wrong_func, 20) { println!("  {v:6}  {k}"); }
+        println!("=============================================================\n");
     }
 }
