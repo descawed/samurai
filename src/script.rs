@@ -155,6 +155,10 @@ pub struct ScriptFormatter {
     float_config: Option<HashMap<(EnumType, u32), String>>,
     made_changes: bool,
     quiet: bool,
+    // whether we're lexically inside an `@{}` object-attribute block (including nested method
+    // bodies). The developers prefix constants there with `$#` ~2/3 of the time, so as a structural
+    // approximation (Rule C) we emit restored constants as `$#NAME` whenever this is set.
+    in_attribute: bool,
 }
 
 impl ScriptFormatter {
@@ -164,6 +168,7 @@ impl ScriptFormatter {
             float_config: None,
             made_changes: false,
             quiet: false,
+            in_attribute: false,
         }
     }
 
@@ -173,6 +178,7 @@ impl ScriptFormatter {
 
     fn reset(&mut self) {
         self.made_changes = false;
+        self.in_attribute = false;
     }
 
     fn get_constant(&self, value_type: EnumType, value: i32, accept: &[i32]) -> Option<Expression> {
@@ -255,9 +261,14 @@ impl ScriptFormatter {
         };
 
         // if we found a match for a symbolic constant, replace the literal expression with one
-        // referencing the constant
+        // referencing the constant. Inside an `@{}` block the developers conventionally prefix
+        // constants with `$#`, so wrap it in a `Global` (which renders as `$`) to match (Rule C).
         if let Some(constant) = constant {
-            *expr = constant;
+            *expr = if self.in_attribute {
+                Expression::Global(Box::new(constant))
+            } else {
+                constant
+            };
             self.made_changes = true;
         }
     }
@@ -375,8 +386,12 @@ impl ScriptFormatter {
         for stmt in block.iter_mut() {
             match stmt {
                 Statement::ObjectInitialization(expr, init_block) => {
+                    // the object expression itself is outside the `@{}`; only its body is inside
                     self.process_expression(expr, &scope);
+                    let was_in_attribute = self.in_attribute;
+                    self.in_attribute = true;
                     self.process_block(init_block);
+                    self.in_attribute = was_in_attribute;
                 }
                 Statement::Conditional(conditional, else_block) => {
                     let mut condition = Some(conditional);
@@ -624,6 +639,7 @@ mod scorecard {
         over: usize,         // ref = literal but ours = constant (over-application)
         structural: usize,   // unexpected misalignment at this position
         ref_dollar: usize,   // ref constant carried a `$` prefix
+        dollar_match: usize, // correct positions where our `$`-prefix matches the ref's (Rule C)
     }
 
     fn topn(map: &HashMap<String, usize>, n: usize) -> Vec<(String, usize)> {
@@ -635,6 +651,50 @@ mod scorecard {
 
     fn family(name: &str) -> String {
         name.split('_').next().unwrap_or(name).to_string()
+    }
+
+    /// Recursively splice `$Include "x.sol"` directives by replacing each with the (also
+    /// include-resolved) contents of the referenced file, mirroring the *inlined* form the
+    /// shipped/preprocessed scripts take in production. The PSP corpus, by contrast, keeps
+    /// includes un-inlined, so without this the per-file scoring never sees utility-class method
+    /// bodies (ClassSAY, ClassMOVE, …) that live in sibling files — making any cross-file
+    /// inference untestable. Resolution is relative to each file's own directory. `config.h` and
+    /// non-`.sol`/`.lst` includes are left as literal directives; missing files are skipped. A
+    /// canonical-path visited set dedupes repeated includes and breaks cycles.
+    fn resolve_includes(path: &std::path::Path) -> String {
+        fn go(
+            path: &std::path::Path,
+            inc_re: &Regex,
+            visited: &mut std::collections::HashSet<PathBuf>,
+            out: &mut String,
+        ) {
+            let canon = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+            if !visited.insert(canon) {
+                return; // already inlined somewhere in this unit (dedupe / cycle guard)
+            }
+            let text = match std::fs::read(path) {
+                Ok(bytes) => String::from_utf8_lossy(&bytes).into_owned(),
+                Err(_) => return,
+            };
+            let dir = path.parent().map(PathBuf::from).unwrap_or_default();
+            for line in text.lines() {
+                if let Some(caps) = inc_re.captures(line) {
+                    let name = &caps[1];
+                    if name.ends_with(".sol") || name.ends_with(".lst") {
+                        go(&dir.join(name), inc_re, visited, out);
+                        continue;
+                    }
+                }
+                out.push_str(line);
+                out.push('\n');
+            }
+        }
+
+        let inc_re = Regex::new(r#"^\s*\$Include\s+"([^"]+)"\s*;\s*$"#).unwrap();
+        let mut visited = std::collections::HashSet::new();
+        let mut out = String::new();
+        go(path, &inc_re, &mut visited, &mut out);
+        out
     }
 
     #[test]
@@ -672,7 +732,9 @@ mod scorecard {
         paths.sort();
 
         for path in &paths {
-            let text = String::from_utf8_lossy(&std::fs::read(path).unwrap()).into_owned();
+            // inline `$Include`s so utility-class method bodies are in scope, matching the
+            // pre-processed (inlined) form the formatter targets in production
+            let text = resolve_includes(path);
 
             // reference: format ground truth as-is (constants preserved), no inference
             let mut ref_fmt = ScriptFormatter::new();
@@ -719,6 +781,11 @@ mod scorecard {
                     }
                     if undollar(r) == undollar(o) {
                         c.correct += 1;
+                        // among positions where we restored the right constant, does our `$`-prefix
+                        // (emitted by Rule C inside `@{}`) match the developer's?
+                        if r.starts_with('$') == o.starts_with('$') {
+                            c.dollar_match += 1;
+                        }
                         continue;
                     }
                     if is_number(o) {
@@ -760,7 +827,9 @@ mod scorecard {
         println!("  wrong (B)      : {:7}  ({:5.2}%)   wrong const, DIFFERENT value", c.wrong, pct(c.wrong));
         println!("  structural     : {:7}  ({:5.2}%)", c.structural, pct(c.structural));
         println!("over-application : {:7}              produced a constant where dev wrote a literal", c.over);
-        println!("\n$-prefix (cosmetic, excluded above): {} of {} ref constants carried `$` ({:.2}%); current formatter emits none.", c.ref_dollar, c.ref_constants, pct(c.ref_dollar));
+        println!("\n$-prefix (cosmetic, excluded from accuracy above): {} of {} ref constants carried `$` ({:.2}%).", c.ref_dollar, c.ref_constants, pct(c.ref_dollar));
+        let dollar_pct = if c.correct == 0 { 0.0 } else { 100.0 * c.dollar_match as f64 / c.correct as f64 };
+        println!("  prefix accuracy (over {} correctly-restored positions): {} match ({:.3}%), {} mismatch (Rule C).", c.correct, c.dollar_match, dollar_pct, c.correct - c.dollar_match);
 
         println!("\n-- missed (C) by constant family --");
         for (k, v) in topn(&missed_family, 20) { println!("  {v:6}  {k}"); }
