@@ -752,6 +752,7 @@ static SIGNATURES: LazyLock<HashMap<&'static str, Signature>> = LazyLock::new(||
         "WeaponOff" => Signature::args(vec![EnumType::Character, EnumType::Character]),
         "Dead" => Signature::args(vec![EnumType::Character, EnumType::Character]),
         "Watch" => Signature::args(vec![EnumType::Character, EnumType::Character]),
+        "PadAction" => Signature::args(vec![EnumType::Button]),
         "AIStatus" => Signature::args(vec![EnumType::Character, EnumType::Ai]),
     }
 });
