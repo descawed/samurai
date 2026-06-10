@@ -576,7 +576,7 @@ static SIGNATURES: LazyLock<HashMap<&'static str, Signature>> = LazyLock::new(||
         "StartCharTrace" => Signature::args(vec![EnumType::Character, EnumType::Character, EnumType::Command]),
         "StopCharTrace" => Signature::args(vec![EnumType::Character]),
         "GetCharStatus" => Signature::args(vec![EnumType::Character, EnumType::Event]).returns(EnumType::Boolean),
-        "SetCharTarget" => Signature::args(vec![EnumType::Character, EnumType::Character]),
+        "SetCharTarget" => Signature::args(vec![EnumType::Character, EnumType::Character, EnumType::Null]),
         // the two-argument form aims one character at another; the four-argument form aims at an
         // (x, y, z) coordinate instead. Typing the second argument Character is safe for the
         // coordinate form because Character has no float-valued constants.
