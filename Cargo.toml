@@ -40,5 +40,5 @@ thiserror = "2.0.18"
 toml = "1.1"
 
 [profile.release]
-lto = true
+lto = "thin"
 strip = true
