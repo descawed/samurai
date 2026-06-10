@@ -738,8 +738,10 @@ static SIGNATURES: LazyLock<HashMap<&'static str, Signature>> = LazyLock::new(||
         // GetEventManFlag have no typed arguments
         "SetEventProFlag" => Signature::args(vec![EnumType::Any, EnumType::EventProgress]),
         "GetEventProFlag" => Signature::args(vec![EnumType::Any]).returns(EnumType::EventProgress),
-        // SetEventActEndFlag, GetEventActEndFlag, SetHintMessage, SetGameStop, SetGameClear, SetDrawCost,
-        // LoadMessage, SetGameScriptPhase, GetValue2String, DelTaskID have no typed arguments
+        "SetEventActEndFlag" => Signature::args(vec![EnumType::Any, EnumType::Boolean]),
+        "GetEventActEndFlag" => Signature::args(vec![EnumType::Any]).returns(EnumType::Boolean),
+        // SetHintMessage, SetGameStop, SetGameClear, SetDrawCost, LoadMessage, SetGameScriptPhase,
+        // GetValue2String, DelTaskID have no typed arguments
         "GiveMeDaikon" => Signature::args(vec![EnumType::Character]),
         // SetWeaponForge, SetWeaponHardness, SetWeaponDeposit, GetWeaponNum, CheckWeaponHardness, CheckWeaponAttack,
         // CheckWeaponDefense, ReportWeapon, EventEndWait, GameStopWait, SetMapOutEnd, PrintFunc have no typed arguments
