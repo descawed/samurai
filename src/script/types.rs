@@ -231,13 +231,31 @@ const SET_CHAR_ACTION_CASES: &[(i32, EnumType)] = &[
 const SEND_FUNC_CASES: &[(i32, EnumType)] = &[(1, EnumType::Null)];
 /// `SetCameraPos` is overloaded on its leading `CAMERA_*` mode. Its first argument is a character
 /// for the character-relative modes (`CHAR`=1, `2CHAR`=2, `CHAR2`=3) but a world coordinate for
-/// `WORLD`=0; its second argument is a character only for the two-character mode (`2CHAR`=2).
+/// `WORLD`=0; for the `INIT`=-1 reset form it is an optional trailing boolean. Its second argument
+/// is a character only for the two-character mode (`2CHAR`=2).
 const CAMERA_POS_ARG1_CASES: &[(i32, EnumType)] = &[
-    (1, EnumType::Character), // CAMERA_CHAR
-    (2, EnumType::Character), // CAMERA_2CHAR
-    (3, EnumType::Character), // CAMERA_CHAR2
+    (-1, EnumType::Boolean),  // INIT (optional reset flag)
+    (1, EnumType::Character),  // CAMERA_CHAR
+    (2, EnumType::Character),  // CAMERA_2CHAR
+    (3, EnumType::Character),  // CAMERA_CHAR2
 ];
 const CAMERA_POS_ARG2_CASES: &[(i32, EnumType)] = &[(2, EnumType::Character)]; // CAMERA_2CHAR
+const CAMERA_POS_ARG10_CASES: &[(i32, EnumType)] = &[(0, EnumType::Boolean)]; // CAMERA_WORLD
+const CAMERA_POS_ARG11_CASES: &[(i32, EnumType)] = &[(2, EnumType::Boolean)]; // CAMERA_2CHAR
+const CAMERA_POS_ARG12_CASES: &[(i32, EnumType)] = &[
+    (2, EnumType::Boolean), // CAMERA_2CHAR
+    (3, EnumType::Boolean), // CAMERA_CHAR2
+];
+const CAMERA_POS_ARG13_CASES: &[(i32, EnumType)] = &[
+    (1, EnumType::Boolean), // CAMERA_CHAR
+    (2, EnumType::Boolean), // CAMERA_2CHAR
+    (3, EnumType::Boolean), // CAMERA_CHAR2
+];
+const CAMERA_POS_ARG14_CASES: &[(i32, EnumType)] = &[
+    (1, EnumType::Boolean), // CAMERA_CHAR
+    (3, EnumType::Boolean), // CAMERA_CHAR2
+];
+const CAMERA_POS_ARG15_CASES: &[(i32, EnumType)] = &[(1, EnumType::Boolean)]; // CAMERA_CHAR
 
 #[derive(Debug, PartialEq, Clone)]
 pub(super) struct Variable(pub String, pub Option<Box<Variable>>); // variable with zero or more attribute accesses
@@ -625,11 +643,25 @@ static SIGNATURES: LazyLock<HashMap<&'static str, Signature>> = LazyLock::new(||
         "SetCharWeapon" => Signature::args(vec![EnumType::Character]),
         "SetBattleCamera" => Signature::args(vec![EnumType::Boolean]),
         // a lone Camera argument of -1 is the generic INIT sentinel, not CAMERA_INIT; the next two
-        // arguments are character ids or world coordinates depending on the camera mode (see cases)
+        // arguments are character ids or world coordinates depending on the camera mode, then
+        // potentially one or more booleans at the end (see cases)
         "SetCameraPos" => Signature::sig(vec![
             ArgType::Sentinel { ty: EnumType::Camera, accept: SENTINEL_INIT },
             ArgType::Switch { on: 0, cases: CAMERA_POS_ARG1_CASES, default: EnumType::Any },
             ArgType::Switch { on: 0, cases: CAMERA_POS_ARG2_CASES, default: EnumType::Any },
+            ArgType::Fixed(EnumType::Any),
+            ArgType::Fixed(EnumType::Any),
+            ArgType::Fixed(EnumType::Any),
+            ArgType::Fixed(EnumType::Any),
+            ArgType::Fixed(EnumType::Any),
+            ArgType::Fixed(EnumType::Any),
+            ArgType::Fixed(EnumType::Any),
+            ArgType::Switch { on: 0, cases: CAMERA_POS_ARG10_CASES, default: EnumType::Any },
+            ArgType::Switch { on: 0, cases: CAMERA_POS_ARG11_CASES, default: EnumType::Any },
+            ArgType::Switch { on: 0, cases: CAMERA_POS_ARG12_CASES, default: EnumType::Any },
+            ArgType::Switch { on: 0, cases: CAMERA_POS_ARG13_CASES, default: EnumType::Any },
+            ArgType::Switch { on: 0, cases: CAMERA_POS_ARG14_CASES, default: EnumType::Any },
+            ArgType::Switch { on: 0, cases: CAMERA_POS_ARG15_CASES, default: EnumType::Any },
         ]),
         "SetBustupCamera" => Signature::args(vec![EnumType::Character]),
         "SetSoloCamera" => Signature::args(vec![EnumType::Character]),
