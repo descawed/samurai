@@ -530,6 +530,24 @@ pub fn deobfuscate(name: &mut String) {
     }
 }
 
+/// Argument types for well-known user-defined methods, keyed by method name.
+///
+/// A few methods are used so uniformly across the game's scripts that their argument types are
+/// effectively fixed, yet ordinary inference can't recover them because the value never reaches a
+/// typed builtin along a path we track. `ClassEventSOL`'s `SEL`, for example, always takes a
+/// character ID as its first argument, but that value is only ever stored into untyped object
+/// attributes (`ClassSel#name`), so there is no anchor to propagate from. We seed these by name in
+/// the analyzer and let the normal pipeline carry the type to the call sites. The returned slice
+/// covers a prefix of the arguments; any remaining arguments are left to ordinary inference.
+pub(super) fn well_known_method_arguments(name: &str) -> &'static [EnumType] {
+    match name {
+        // SEL(character, prompt): registers a dialogue choice spoken to/by a character. Verified
+        // to take a character ID first argument in 100% of occurrences across all game versions.
+        "SEL" => &[EnumType::Character],
+        _ => &[],
+    }
+}
+
 // TODO: re-obfuscate
 
 static SIGNATURES: LazyLock<HashMap<&'static str, Signature>> = LazyLock::new(|| {
