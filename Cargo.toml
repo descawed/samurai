@@ -48,5 +48,5 @@ windows-sys = { version = "0.61.2", features = [
 ] }
 
 [profile.release]
-lto = true
+lto = "thin"
 strip = true
