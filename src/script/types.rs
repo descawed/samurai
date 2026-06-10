@@ -123,7 +123,11 @@ impl EnumType {
             "NULL" => Some(Self::Null),
             "FADE_IN_INIT" | "FADE_IN" | "FADE_OUT" => Some(Self::FadeDir),
             "FADE_NORMAL" | "FADE_SPECIAL" => Some(Self::FadeType),
-            "SAY_WEAPON_ON" | "SAY_WEAPON_OFF" => Some(Self::Command),
+            // despite the `SAY_` prefix these aren't `Say` window types like SAY_NORMAL/SAY_SHARP;
+            // config.h groups them separately as SetSayMotion motion values (2048/2049), so they're
+            // Animation constants (the type of SetSayMotion's motion argument and the motion arg
+            // that the SAY method routes into it)
+            "SAY_WEAPON_ON" | "SAY_WEAPON_OFF" => Some(Self::Animation),
             _ => {
                 let index = constant
                     .match_indices('_')
