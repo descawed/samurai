@@ -815,21 +815,24 @@ impl Signature {
             .unwrap_or_else(|| self.vararg.clone())
     }
 
-    pub fn get_argument(&self, index: usize) -> EnumType {
-        self.arguments
-            .get(index)
-            .map(ArgType::base)
-            .unwrap_or_default()
-    }
-
-    pub fn add_argument(&mut self, index: usize, arg_type: EnumType) -> EnumType {
+    /// Merge an inferred type (and optional sentinel `accept` list) into argument `index`, growing
+    /// the argument list as needed. Inferred arguments are `Fixed` unless an `accept` list is
+    /// supplied — a parameter that flows into a built-in's `Sentinel` argument (e.g. SAY's motion
+    /// arg into `SetSayMotion`) keeps that sentinel so a value-0 argument restores `#OFF` rather
+    /// than the generic `#NULL`. Returns whether the argument's resolution actually changed.
+    pub fn infer_argument(&mut self, index: usize, arg_type: EnumType, accept: &'static [i32]) -> bool {
         if index >= self.arguments.len() {
             self.arguments.resize_with(index + 1, ArgType::default);
         }
-        // arguments inferred for user-defined functions are always plain `Fixed` types
-        let new_type = self.arguments[index].base().choose(arg_type);
-        self.arguments[index] = ArgType::Fixed(new_type);
-        new_type
+        let base = self.arguments[index].base().choose(arg_type);
+        let resolved = if accept.is_empty() {
+            ArgType::Fixed(base)
+        } else {
+            ArgType::Sentinel { ty: base, accept }
+        };
+        let changed = self.arguments[index] != resolved;
+        self.arguments[index] = resolved;
+        changed
     }
 
     pub fn return_type(&self) -> EnumType {
@@ -846,8 +849,19 @@ impl Signature {
         // only plain `Fixed` arguments (inferred user functions) are merged; conditional built-in
         // rules are preserved as-is
         for (our_arg, their_arg) in self.arguments.iter_mut().zip(other.arguments.iter()) {
-            if let ArgType::Fixed(our) = our_arg {
-                *our = our.choose(their_arg.base());
+            match (&*our_arg, their_arg) {
+                // a plain `Fixed` arg adopts the other side's inferred `Sentinel` (e.g. SAY's
+                // motion arg, recovered through a list slot, must keep its `0→OFF` behavior
+                // across the re-declarations that reprocessing a `?F` definition produces)
+                (ArgType::Fixed(our), ArgType::Sentinel { ty, accept }) => {
+                    *our_arg = ArgType::Sentinel { ty: our.choose(*ty), accept };
+                }
+                (ArgType::Fixed(our), _) => {
+                    *our_arg = ArgType::Fixed(our.choose(their_arg.base()));
+                }
+                // our side already carries a conditional rule (built-in `Switch`/`Sentinel` or an
+                // inferred `Sentinel`); preserve it as-is
+                _ => {}
             }
         }
         if other.arguments.len() > self.arguments.len() {
@@ -900,6 +914,11 @@ macro_rules! parent {
 #[derive(Debug, Clone)]
 pub(super) struct Scope {
     scalars: HashMap<String, EnumType>,
+    // sentinel `accept` lists for scalars that were typed by flowing into a built-in's `Sentinel`
+    // argument (chiefly user-defined method parameters routed through a list slot, e.g. SAY's
+    // motion arg into `SetSayMotion`). Kept parallel to `scalars` so the inferred signature can
+    // preserve the `0→OFF`/`-1→INIT` behavior rather than collapsing to a plain `Fixed` type.
+    scalar_sentinels: HashMap<String, &'static [i32]>,
     // since our parent scope is in a RefCell, any type we want to be able to return a reference to
     // has to be in an Rc, because there's no other way to get a permanent reference to anything in
     // our maps out of the parent RefCell
@@ -915,6 +934,7 @@ impl Scope {
     pub fn new(parent: Option<SharedScope>) -> SharedScope {
         Rc::new(RefCell::new(Self {
             scalars: HashMap::new(),
+            scalar_sentinels: HashMap::new(),
             functions: HashMap::new(),
             objects: HashMap::new(),
             parent: parent.as_ref().map(Rc::downgrade),
@@ -929,6 +949,7 @@ impl Scope {
 
         let this = Rc::new(RefCell::new(Self {
             scalars: constants.unwrap_or_default(),
+            scalar_sentinels: HashMap::new(),
             functions,
             objects: HashMap::new(),
             parent: None,
@@ -954,6 +975,10 @@ impl Scope {
                     self.scalars.insert(name.clone(), new_value);
                 }
             }
+        }
+
+        for (name, &accept) in &other.scalar_sentinels {
+            self.scalar_sentinels.entry(name.clone()).or_insert(accept);
         }
 
         for (name, new_value) in &other.functions {
@@ -1137,6 +1162,14 @@ impl Scope {
             .insert(String::from(name), old_type.choose(scalar_type));
     }
 
+    fn add_scalar_sentinel(&mut self, name: &str, accept: &'static [i32]) {
+        // keep the first sentinel recorded for this scalar (sentinel-bearing reads of the same slot
+        // agree in practice; this just avoids thrashing the fixpoint)
+        self.scalar_sentinels
+            .entry(String::from(name))
+            .or_insert(accept);
+    }
+
     fn add_function(&mut self, name: &str, signature: SharedSignature) {
         self.objects.remove(name);
         self.scalars.remove(name);
@@ -1169,6 +1202,10 @@ impl Scope {
 
     pub fn lookup_own_scalar(&self, name: &str) -> Option<EnumType> {
         self.scalars.get(name).copied()
+    }
+
+    pub fn lookup_own_scalar_sentinel(&self, name: &str) -> Option<&'static [i32]> {
+        self.scalar_sentinels.get(name).copied()
     }
 
     pub fn lookup_own_function(&self, name: &str) -> Option<SharedSignature> {
@@ -1363,6 +1400,26 @@ impl Scope {
             }
             Some((None, name)) => {
                 self.add_scalar(name, scalar_type);
+            }
+            None => (),
+        }
+    }
+
+    /// Record that the scalar `var` carries a sentinel `accept` list, stored on the scalar's
+    /// defining scope (mirroring `update_local_scalar`). Used to remember that a method parameter
+    /// flowed into a `Sentinel` argument so the inferred signature can reproduce it.
+    pub fn update_scalar_sentinel(&mut self, var: &Variable, is_global: bool, accept: &'static [i32]) {
+        let definition_scope = if is_global {
+            self.lookup_definition_scope_global(var)
+        } else {
+            self.lookup_definition_scope_local(var)
+        };
+        match definition_scope {
+            Some((Some(scope), name)) => {
+                scope.borrow_mut().add_scalar_sentinel(name, accept);
+            }
+            Some((None, name)) => {
+                self.add_scalar_sentinel(name, accept);
             }
             None => (),
         }

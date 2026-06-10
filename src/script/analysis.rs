@@ -4,20 +4,51 @@ use std::rc::Rc;
 
 use super::parse::{Block, Conditional, Expression, Statement};
 use super::types::{
-    EnumType, Scope, ScopeExt, ScriptValue, SharedScope, SharedSignature, Signature, Variable,
-    deobfuscate,
+    EnumType, NO_SENTINEL, Scope, ScopeExt, ScriptValue, SharedScope, SharedSignature, Signature,
+    Variable, deobfuscate,
 };
 
 const MAX_ITERATIONS: usize = 10;
 
 pub(super) struct Analyzer {
     made_changes: bool,
+    /// Inferred type of each list "slot" — a `(list at index)` element — keyed by
+    /// `(list variable name, index variable name)`. This lets a value written into a slot in one
+    /// method (`($#SayTable at #n0) = #a`) pick up the type the same slot is later read as in
+    /// another (`$Say ($#SayTable at #n0), …` → `Character`). The SAY/MASAY utility methods route
+    /// their parameters into typed engine calls through exactly this kind of shared heterogeneous
+    /// list, so without it those parameters never get typed. Types are merged with `choose`, so a
+    /// slot only ever holds a type both endpoints agree on (a disagreement collapses to `Conflict`,
+    /// which never restores a constant) — keeping the "no false constants" property intact.
+    slot_types: HashMap<(String, String), EnumType>,
+    /// Sentinel `accept` list observed for a slot when it was read as a built-in's `Sentinel`
+    /// argument (e.g. `SetSayMotion`'s `0→OFF` motion arg). Propagated onto the parameter written
+    /// into that slot so the inferred signature reproduces the sentinel instead of falling back to
+    /// the generic `0→NULL`.
+    slot_accept: HashMap<(String, String), &'static [i32]>,
 }
 
 impl Analyzer {
     pub fn new() -> Self {
         Self {
             made_changes: false,
+            slot_types: HashMap::new(),
+            slot_accept: HashMap::new(),
+        }
+    }
+
+    /// Merge a newly-observed type (and any sentinel `accept` list from the reading position) into
+    /// a list slot, conservatively (`choose`). Flags a change so the fixpoint keeps iterating.
+    fn record_slot(&mut self, key: (String, String), ty: EnumType, accept: &'static [i32]) {
+        if !accept.is_empty() && !self.slot_accept.contains_key(&key) {
+            self.slot_accept.insert(key.clone(), accept);
+            self.made_changes = true;
+        }
+        let entry = self.slot_types.entry(key).or_insert(EnumType::Any);
+        let merged = entry.choose(ty);
+        if *entry != merged {
+            *entry = merged;
+            self.made_changes = true;
         }
     }
 
@@ -118,12 +149,19 @@ impl Analyzer {
         let mut prior: Vec<Option<i32>> = Vec::with_capacity(args.len());
         for (i, arg_expr) in args.iter_mut().enumerate() {
             let arg_type = { signature.borrow().arg_type(i) };
-            let (final_arg_type, _sentinel) = arg_type.resolve(&prior);
+            let (final_arg_type, sentinel_accept) = arg_type.resolve(&prior);
             let literal = match arg_expr.unwrap_global().0 {
                 &Expression::Int(value) => Some(value),
                 _ => None,
             };
             prior.push(literal);
+
+            // a `(list at index)` argument tells us the type stored in that slot (e.g. `$Say` reads
+            // its speaker from `($#SayTable at #n0)`, typing that slot `Character`), plus any
+            // sentinel behavior of the reading position (`SetSayMotion`'s motion arg is `0→OFF`)
+            if let Some(key) = slot_key(arg_expr) {
+                self.record_slot(key, final_arg_type, sentinel_accept);
+            }
 
             let (inner_expr, is_global) = arg_expr.unwrap_global_mut();
             match inner_expr {
@@ -235,6 +273,39 @@ impl Analyzer {
                             ScriptValue::Scalar(lhs_type),
                         );
                     }
+
+                    // when the lhs is a list slot `($#list at #idx)`, unify the slot's type with the
+                    // rhs variable in both directions — this is how a SAY/MASAY parameter assigned
+                    // into `#SayTable` picks up the type that slot is later read as by `$Say`.
+                    if let Some(key) = slot_key(obj_expr) {
+                        let slot_ty = self.slot_types.get(&key).copied();
+                        let slot_accept = self.slot_accept.get(&key).copied();
+                        if let Expression::Variable(arg_var) = inner_arg_expr
+                            && let Some(slot_ty) = slot_ty
+                            && slot_ty.is_concrete()
+                        {
+                            self.update(
+                                &scope,
+                                arg_var,
+                                is_arg_global,
+                                ScriptValue::Scalar(slot_ty),
+                            );
+                            // carry the slot's sentinel behavior onto the parameter so its
+                            // inferred signature reproduces it (value-0 → `#OFF`, not `#NULL`)
+                            if let Some(accept) = slot_accept {
+                                scope.borrow_mut().update_scalar_sentinel(
+                                    arg_var,
+                                    is_arg_global,
+                                    accept,
+                                );
+                            }
+                        }
+                        if let Some(ScriptValue::Scalar(rhs_ty)) =
+                            get_expression_type(&scope, arg_expr)
+                        {
+                            self.record_slot(key, rhs_ty, NO_SENTINEL);
+                        }
+                    }
                 }
             }
             Expression::FunctionCall(name, args) => {
@@ -300,12 +371,11 @@ impl Analyzer {
                 let local_scope = func_scope.borrow_mut();
                 let mut sig_mut = function_sig.borrow_mut();
                 for (i, arg_name) in args.iter().enumerate() {
-                    let old_type = sig_mut.get_argument(i);
-                    let new_type = sig_mut.add_argument(
-                        i,
-                        local_scope.lookup_own_scalar(arg_name).unwrap_or_default(),
-                    );
-                    if old_type != new_type {
+                    let inferred = local_scope.lookup_own_scalar(arg_name).unwrap_or_default();
+                    let accept = local_scope
+                        .lookup_own_scalar_sentinel(arg_name)
+                        .unwrap_or(NO_SENTINEL);
+                    if sig_mut.infer_argument(i, inferred, accept) {
                         self.made_changes = true;
                     }
                 }
@@ -382,6 +452,28 @@ impl Analyzer {
             }
         }
     }
+}
+
+/// If `expr` is a list-element access `(list at index)` where both the list and the index are
+/// plain (unqualified) variables, return its canonical slot key `(list name, index name)`. The
+/// `$`/global prefix is ignored so a write `($#SayTable at #n0)` and a read `($#SayTable at #n0)`
+/// in sibling methods map to the same slot. Qualified forms (`$#say#n0`) are deliberately excluded
+/// to keep slot identity unambiguous.
+fn slot_key(expr: &Expression) -> Option<(String, String)> {
+    let (inner, _) = expr.unwrap_global();
+    if let Expression::MethodCall(list_expr, method, args) = inner
+        && method == "at"
+        && args.len() == 1
+    {
+        let (Expression::Variable(Variable(list_name, None)), _) = list_expr.unwrap_global() else {
+            return None;
+        };
+        let (Expression::Variable(Variable(index_name, None)), _) = args[0].unwrap_global() else {
+            return None;
+        };
+        return Some((list_name.clone(), index_name.clone()));
+    }
+    None
 }
 
 fn get_expression_type(scope: &SharedScope, expr: &Expression) -> Option<ScriptValue> {
