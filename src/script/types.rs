@@ -635,8 +635,13 @@ static SIGNATURES: LazyLock<HashMap<&'static str, Signature>> = LazyLock::new(||
         "SetTimeAction" => Signature::args(vec![EnumType::Character, EnumType::Character, EnumType::Duration]),
         // SetExtraAction has no typed arguments
         // the first argument is a line/function id (not a character); the next three coordinates
-        // are the move goal (MAPOUT)
-        "SetPosLineAction" => Signature::args(vec![EnumType::Any, EnumType::MapOut, EnumType::MapOut, EnumType::MapOut]),
+        // are the move goal (MAPOUT), or #INIT to clear
+        "SetPosLineAction" => Signature::sig(vec![
+            ArgType::Fixed(EnumType::Any),
+            ArgType::Sentinel { ty: EnumType::MapOut, accept: SENTINEL_INIT },
+            ArgType::Fixed(EnumType::MapOut),
+            ArgType::Fixed(EnumType::MapOut),
+        ]),
         "GetDamageKind" => Signature::args(vec![EnumType::Character]).returns(EnumType::Damage),
         "GetCharVisible" => Signature::args(vec![EnumType::Character, EnumType::Character]),
         "SetLineViewAction" => Signature::args(vec![EnumType::Character]),
