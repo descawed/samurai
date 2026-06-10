@@ -601,7 +601,7 @@ static SIGNATURES: LazyLock<HashMap<&'static str, Signature>> = LazyLock::new(||
         "SetCharDir2" => Signature::args(vec![EnumType::Character, EnumType::Character]),
         "GetCharPos" => Signature::args(vec![EnumType::Character]),
         // same note as SetCharDir
-        "GetCharRange" => Signature::args(vec![EnumType::Character, EnumType::Character]),
+        "GetCharRange" => Signature::args(vec![EnumType::Character, EnumType::Character]).returns(EnumType::Boolean),
         "GetCharLife" => Signature::args(vec![EnumType::Character]),
         "GetCharLifeMax" => Signature::args(vec![EnumType::Character]),
         "SetCharForm" => Signature::args(vec![EnumType::Character, EnumType::Boolean, EnumType::Animation]),
