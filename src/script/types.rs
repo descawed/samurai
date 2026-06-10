@@ -229,6 +229,15 @@ const SET_CHAR_ACTION_CASES: &[(i32, EnumType)] = &[
 ];
 /// `SendFunc`'s second argument is a character ID unless the first argument is `1` (null).
 const SEND_FUNC_CASES: &[(i32, EnumType)] = &[(1, EnumType::Null)];
+/// `SetCameraPos` is overloaded on its leading `CAMERA_*` mode. Its first argument is a character
+/// for the character-relative modes (`CHAR`=1, `2CHAR`=2, `CHAR2`=3) but a world coordinate for
+/// `WORLD`=0; its second argument is a character only for the two-character mode (`2CHAR`=2).
+const CAMERA_POS_ARG1_CASES: &[(i32, EnumType)] = &[
+    (1, EnumType::Character), // CAMERA_CHAR
+    (2, EnumType::Character), // CAMERA_2CHAR
+    (3, EnumType::Character), // CAMERA_CHAR2
+];
+const CAMERA_POS_ARG2_CASES: &[(i32, EnumType)] = &[(2, EnumType::Character)]; // CAMERA_2CHAR
 
 #[derive(Debug, PartialEq, Clone)]
 pub(super) struct Variable(pub String, pub Option<Box<Variable>>); // variable with zero or more attribute accesses
@@ -548,9 +557,12 @@ static SIGNATURES: LazyLock<HashMap<&'static str, Signature>> = LazyLock::new(||
         ]),
         "StartCharTrace" => Signature::args(vec![EnumType::Character, EnumType::Character, EnumType::Command]),
         "StopCharTrace" => Signature::args(vec![EnumType::Character]),
-        "GetCharStatus" => Signature::args(vec![EnumType::Character, EnumType::Event]),
+        "GetCharStatus" => Signature::args(vec![EnumType::Character, EnumType::Event]).returns(EnumType::Boolean),
         "SetCharTarget" => Signature::args(vec![EnumType::Character, EnumType::Character]),
-        "SetCharDir2" => Signature::args(vec![EnumType::Character]),
+        // the two-argument form aims one character at another; the four-argument form aims at an
+        // (x, y, z) coordinate instead. Typing the second argument Character is safe for the
+        // coordinate form because Character has no float-valued constants.
+        "SetCharDir2" => Signature::args(vec![EnumType::Character, EnumType::Character]),
         "GetCharPos" => Signature::args(vec![EnumType::Character]),
         // same note as SetCharDir
         "GetCharRange" => Signature::args(vec![EnumType::Character, EnumType::Character]),
@@ -594,8 +606,13 @@ static SIGNATURES: LazyLock<HashMap<&'static str, Signature>> = LazyLock::new(||
         "SetCharHiFaceMode" => Signature::args(vec![EnumType::Character, EnumType::Boolean]),
         "SetCharWeapon" => Signature::args(vec![EnumType::Character]),
         "SetBattleCamera" => Signature::args(vec![EnumType::Boolean]),
-        // a lone Camera argument of -1 is the generic INIT sentinel, not CAMERA_INIT
-        "SetCameraPos" => Signature::sig(vec![ArgType::Sentinel { ty: EnumType::Camera, accept: SENTINEL_INIT }]),
+        // a lone Camera argument of -1 is the generic INIT sentinel, not CAMERA_INIT; the next two
+        // arguments are character ids or world coordinates depending on the camera mode (see cases)
+        "SetCameraPos" => Signature::sig(vec![
+            ArgType::Sentinel { ty: EnumType::Camera, accept: SENTINEL_INIT },
+            ArgType::Switch { on: 0, cases: CAMERA_POS_ARG1_CASES, default: EnumType::Any },
+            ArgType::Switch { on: 0, cases: CAMERA_POS_ARG2_CASES, default: EnumType::Any },
+        ]),
         "SetBustupCamera" => Signature::args(vec![EnumType::Character]),
         "SetSoloCamera" => Signature::args(vec![EnumType::Character]),
         "SetFixCamera" => Signature::args(vec![EnumType::Character]),
@@ -718,12 +735,16 @@ static SIGNATURES: LazyLock<HashMap<&'static str, Signature>> = LazyLock::new(||
         "MapOut" => Signature::args(vec![EnumType::Map]),
         "Collision" => Signature::args(vec![EnumType::Character, EnumType::Character]),
         "Damage" => Signature::args(vec![EnumType::Character, EnumType::Character]),
+        "Down" => Signature::args(vec![EnumType::Character, EnumType::Character]),
+        "TalkStart" => Signature::args(vec![EnumType::Character, EnumType::Character]),
         "TalkEnd" => Signature::args(vec![EnumType::Character, EnumType::Character]),
         "TalkSelect" => Signature::args(vec![EnumType::Character]),
         "PosJoin" => Signature::args(vec![EnumType::Character]),
         "PosLeave" => Signature::args(vec![EnumType::Character]),
         "Join" => Signature::args(vec![EnumType::Character, EnumType::Character]),
         "Leave" => Signature::args(vec![EnumType::Character, EnumType::Character]),
+        "ViewJoin" => Signature::args(vec![EnumType::Character, EnumType::Character]),
+        "ViewLeave" => Signature::args(vec![EnumType::Character, EnumType::Character]),
         "TimeOut" => Signature::args(vec![EnumType::Character, EnumType::Character]),
         "SayDead" => Signature::args(vec![EnumType::Character, EnumType::Character]),
         "NpcOut" => Signature::args(vec![EnumType::Character]),
