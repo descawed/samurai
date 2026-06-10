@@ -237,8 +237,14 @@ impl ScriptFormatter {
         // named variable (an assignment/declaration). Inline, a number at a coordinate position is
         // almost always a literal position - including whole numbers written as ints (e.g. a `0`
         // coordinate, which would otherwise wrongly resolve to NULL via the generic int fallback).
+        // The exception is an explicit sentinel value (e.g. SetPosLineAction's `-1`/INIT clear
+        // form), which is a flag rather than a position and should still be restored inline.
         if value_type.is_coordinate() && !in_assignment {
-            return;
+            let is_sentinel =
+                matches!(expr.unwrap_global().0, &Expression::Int(v) if accept.contains(&v));
+            if !is_sentinel {
+                return;
+            }
         }
 
         let constant = match expr.unwrap_global().0 {
