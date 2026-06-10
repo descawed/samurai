@@ -129,9 +129,12 @@ impl EnumType {
             // that the SAY method routes into it)
             "SAY_WEAPON_ON" | "SAY_WEAPON_OFF" => Some(Self::Animation),
             _ => {
+                // the type prefix is the text up to the first `_`, except for the `PARAM_ATTACK`/
+                // `PARAM_WEAPON`/`PARAM_KICK` families, whose prefix spans two segments - so skip an
+                // underscore whose preceding text is just `PARAM` and take the next one
                 let index = constant
                     .match_indices('_')
-                    .find(|(_, s)| *s != "PARAM")? // PARAMs need the next part of the name as well
+                    .find(|(idx, _)| &constant[..*idx] != "PARAM")?
                     .0;
                 let prefix = &constant[..index];
                 Self::from_str(prefix).ok()
