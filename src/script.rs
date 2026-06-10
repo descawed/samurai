@@ -278,6 +278,39 @@ impl ScriptFormatter {
         }
     }
 
+    /// Resolve the type/value of an expression used as the receiver of a method call or comparison:
+    /// a variable's stored value, or the return type of a function/method call. This lets a
+    /// comparison like `($GetCharDead #x) eq 0` propagate the call's `Boolean` return type to the
+    /// literal on the other side, not just plain `#var eq 0` comparisons.
+    fn resolve_value(
+        &self,
+        expr: &Expression,
+        scope: &SharedScope,
+        is_global: bool,
+    ) -> Option<ScriptValue> {
+        let (inner, is_global_inner) = expr.unwrap_global();
+        let is_global = is_global || is_global_inner;
+        match inner {
+            Expression::Variable(var) => scope.borrow().lookup(var, is_global),
+            Expression::FunctionCall(name, _) => scope
+                .borrow()
+                .lookup_function(&name.as_str().into(), is_global)
+                .map(ScriptValue::Function),
+            Expression::MethodCall(obj_expr, method, _) => {
+                let (obj_expr, is_global_obj) = obj_expr.unwrap_global();
+                if let Expression::Variable(obj_var) = obj_expr {
+                    scope
+                        .borrow()
+                        .lookup_method(obj_var, method, is_global || is_global_obj)
+                        .map(ScriptValue::Function)
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        }
+    }
+
     fn process_method(&mut self, object: &ScriptValue, method: &str, args: &mut [Expression]) {
         match (args.len(), method, object) {
             // if this is a comparison or assignment to a scalar with a single argument
@@ -300,9 +333,8 @@ impl ScriptFormatter {
         // do expression-type-specific processing
         match expr {
             Expression::MethodCall(var, method, args) => {
-                if let (Expression::Variable(var), is_global_obj) = var.unwrap_global()
-                    && let Some(obj) = scope.borrow().lookup(var, is_global || is_global_obj)
-                {
+                let (obj_expr, is_global_obj) = var.unwrap_global();
+                if let Some(obj) = self.resolve_value(obj_expr, scope, is_global || is_global_obj) {
                     self.process_method(&obj, method, args);
                 }
             }

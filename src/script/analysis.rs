@@ -195,39 +195,45 @@ impl Analyzer {
             Expression::MethodCall(var, method, args) => {
                 let (obj_expr, is_global_obj) = var.unwrap_global();
                 let is_global = is_global_obj || is_global;
-                if let Expression::Variable(obj_var) = obj_expr {
-                    // this block is necessary to ensure the borrow is dropped promptly
-                    let result = { scope.borrow().lookup_method(obj_var, method, is_global) };
 
-                    if let Some(signature) = result {
-                        self.infer_call_types(signature, args, Rc::clone(&scope));
-                    } else if matches!(
-                        method.as_str(),
-                        "=" | "<" | ">" | "eq" | "lt" | "le" | "gt" | "ge"
-                    ) && args.len() == 1
+                // a method call on a known variable/object pushes argument types from its signature
+                let method_sig = if let Expression::Variable(obj_var) = obj_expr {
+                    scope.borrow().lookup_method(obj_var, method, is_global)
+                } else {
+                    None
+                };
+
+                if let Some(signature) = method_sig {
+                    self.infer_call_types(signature, args, Rc::clone(&scope));
+                } else if matches!(
+                    method.as_str(),
+                    "=" | "<" | ">" | "eq" | "lt" | "le" | "gt" | "ge"
+                ) && args.len() == 1
+                {
+                    // a comparison or assignment unifies the types of its two sides. Either side can
+                    // be a variable or a typed call (e.g. `($GetCharDead #x) eq #flag` types `#flag`
+                    // Boolean), so we propagate in both directions.
+                    let arg_expr = &args[0];
+
+                    // set lhs type based on rhs (only a variable lhs has storage to update)
+                    if let Expression::Variable(obj_var) = obj_expr
+                        && let Some(arg_type) = get_expression_type(&scope, arg_expr)
                     {
-                        let arg_expr = &args[0];
+                        self.update(&scope, obj_var, is_global, arg_type);
+                    }
 
-                        // set lhs type based on rhs
-                        if let Some(arg_type) = get_expression_type(&scope, arg_expr) {
-                            self.update(&scope, obj_var, is_global, arg_type);
-                        }
-
-                        // set rhs type based on lhs
-                        let result = { scope.borrow().lookup(obj_var, is_global) };
-                        let (inner_arg_expr, is_arg_global) = arg_expr.unwrap_global();
-                        if let (
-                            Some(ScriptValue::Scalar(lhs_type)),
-                            Expression::Variable(arg_var),
-                        ) = (result, inner_arg_expr)
-                        {
-                            self.update(
-                                &scope,
-                                arg_var,
-                                is_arg_global,
-                                ScriptValue::Scalar(lhs_type),
-                            );
-                        }
+                    // set rhs type based on lhs (only a variable rhs has storage to update)
+                    let (inner_arg_expr, is_arg_global) = arg_expr.unwrap_global();
+                    if let Expression::Variable(arg_var) = inner_arg_expr
+                        && let Some(ScriptValue::Scalar(lhs_type)) =
+                            get_expression_type(&scope, obj_expr)
+                    {
+                        self.update(
+                            &scope,
+                            arg_var,
+                            is_arg_global,
+                            ScriptValue::Scalar(lhs_type),
+                        );
                     }
                 }
             }
