@@ -5,7 +5,7 @@ use std::rc::Rc;
 use super::parse::{Block, Conditional, Expression, Statement};
 use super::types::{
     EnumType, NO_SENTINEL, Scope, ScopeExt, ScriptValue, SharedScope, SharedSignature, Signature,
-    Variable, deobfuscate,
+    Variable, deobfuscate, well_known_method_arguments,
 };
 
 const MAX_ITERATIONS: usize = 10;
@@ -364,6 +364,32 @@ impl Analyzer {
                         ])))
                     }
                 };
+
+                // seed well-known method signatures by name (e.g. SEL's first argument is always
+                // a Character). These types can't be recovered by following the data flow because
+                // the value only ever lands in untyped object attributes, so we hard-code them and
+                // let the rest of the pipeline propagate from here, including into the body scope so
+                // the seeded types are visible while inferring the body.
+                let seed = well_known_method_arguments(&var.0);
+                if !seed.is_empty() {
+                    {
+                        let mut sig_mut = function_sig.borrow_mut();
+                        for (i, &ty) in seed.iter().enumerate() {
+                            if sig_mut.infer_argument(i, ty, NO_SENTINEL) {
+                                self.made_changes = true;
+                            }
+                        }
+                    }
+                    for (i, arg_name) in args.iter().enumerate().take(seed.len()) {
+                        let ty = function_sig.borrow().arg_type(i).base();
+                        self.define(
+                            &mut func_scope,
+                            &arg_name.as_str().into(),
+                            false,
+                            ScriptValue::Scalar(ty),
+                        );
+                    }
+                }
 
                 self.infer_block(block);
 
