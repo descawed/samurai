@@ -58,7 +58,17 @@ pub enum EnumType {
     Button,
     #[strum(serialize = "OBJECT")]
     ObjectSet,
+    // float-valued coordinate families (map-entry, map-exit, traffic, and forge positions)
+    #[strum(serialize = "MAPIN")]
+    MapIn,
+    #[strum(serialize = "MAPOUT")]
+    MapOut,
+    #[strum(serialize = "TRAFFIC")]
+    Traffic,
+    #[strum(serialize = "SMITH")]
+    Smith,
     // these don't follow the normal naming convention and need special handling
+    Duration, // a float duration in seconds (e.g. for SetTimeAction); INIT_TIME is its sentinel
     Boolean,
     Relation,
     FadeDir,
@@ -73,6 +83,14 @@ pub enum EnumType {
 impl EnumType {
     pub fn is_concrete(&self) -> bool {
         !matches!(self, Self::Any | Self::Conflict)
+    }
+
+    /// Whether this is one of the float-valued coordinate families. These are only restored in
+    /// assignment/declaration contexts (where the developers routed them through named variables
+    /// like `#MapX`/`#GoalX`); a bare float passed inline to a call or compared against is almost
+    /// always a literal position, so restoring it there would produce spurious constants.
+    pub fn is_coordinate(&self) -> bool {
+        matches!(self, Self::MapIn | Self::MapOut | Self::Traffic | Self::Smith)
     }
 
     /// Choose the more specific of this type and another type
@@ -98,6 +116,8 @@ impl EnumType {
     pub fn get_constant_type(constant: &str) -> Option<Self> {
         match constant {
             "ON" | "OFF" => Some(Self::Boolean),
+            // a float duration sentinel (distinct from the integer TIME_* time-of-day constants)
+            "INIT_TIME" => Some(Self::Duration),
             "NO_RELATION" | "ENEMY_RELATION" | "FRIEND_RELATION" => Some(Self::Relation),
             "INIT" => Some(Self::Initialize),
             "NULL" => Some(Self::Null),
@@ -512,12 +532,14 @@ static SIGNATURES: LazyLock<HashMap<&'static str, Signature>> = LazyLock::new(||
         "SetCharDraw" => Signature::args(vec![EnumType::Character, EnumType::Boolean]),
         "SetCharLife" => Signature::args(vec![EnumType::Character]),
         "SetCharLifeMax" => Signature::args(vec![EnumType::Character]),
-        "SetCharPos" => Signature::args(vec![EnumType::Character]),
+        // the three coordinates are the character's map-entry (MAPIN) position
+        "SetCharPos" => Signature::args(vec![EnumType::Character, EnumType::MapIn, EnumType::MapIn, EnumType::MapIn]),
         // SetCharDir also has a 4-argument form with x, y, z instead of a character, but we don't
         // need special handling for that because a float value won't match to a character constant
         // anyway
         "SetCharDir" => Signature::args(vec![EnumType::Character, EnumType::Character]),
-        "SetCharMove" => Signature::args(vec![EnumType::Character, EnumType::Command]),
+        // after the motion command come the three coordinates of the move goal (MAPOUT)
+        "SetCharMove" => Signature::args(vec![EnumType::Character, EnumType::Command, EnumType::MapOut, EnumType::MapOut, EnumType::MapOut]),
         // the third argument's type depends on the COMMAND_* value of the second argument
         "SetCharAction" => Signature::sig(vec![
             ArgType::Fixed(EnumType::Character),
@@ -592,9 +614,12 @@ static SIGNATURES: LazyLock<HashMap<&'static str, Signature>> = LazyLock::new(||
             .vararg_t(ArgType::SwitchAfter { base: EnumType::Event, trigger: -1, then: EnumType::Boolean }),
         "SetLineAction" => Signature::args(vec![EnumType::Character]),
         "SetCharWatch" => Signature::args(vec![EnumType::Character, EnumType::Character, EnumType::Watch, EnumType::Any, EnumType::Object]),
-        "SetTimeAction" => Signature::args(vec![EnumType::Character, EnumType::Character]),
+        // the third argument is a duration in seconds; -1.0 is the INIT_TIME sentinel
+        "SetTimeAction" => Signature::args(vec![EnumType::Character, EnumType::Character, EnumType::Duration]),
         // SetExtraAction has no typed arguments
-        // SetPosLineAction has no typed arguments
+        // the first argument is a line/function id (not a character); the next three coordinates
+        // are the move goal (MAPOUT)
+        "SetPosLineAction" => Signature::args(vec![EnumType::Any, EnumType::MapOut, EnumType::MapOut, EnumType::MapOut]),
         "GetDamageKind" => Signature::args(vec![EnumType::Character]).returns(EnumType::Damage),
         "GetCharVisible" => Signature::args(vec![EnumType::Character, EnumType::Character]),
         "SetLineViewAction" => Signature::args(vec![EnumType::Character]),
@@ -657,7 +682,8 @@ static SIGNATURES: LazyLock<HashMap<&'static str, Signature>> = LazyLock::new(||
         "SetAIRunLimit" => Signature::args(vec![EnumType::Character]),
         "SetAITargetItem" => Signature::args(vec![EnumType::Character, EnumType::Object]),
         "SetAITargetPos" => Signature::args(vec![EnumType::Character]),
-        "SetAICharMove" => Signature::args(vec![EnumType::Character, EnumType::Command]),
+        // after the motion command come the three coordinates of the move goal (MAPOUT)
+        "SetAICharMove" => Signature::args(vec![EnumType::Character, EnumType::Command, EnumType::MapOut, EnumType::MapOut, EnumType::MapOut]),
         "SetAIGroupFooting" => Signature::args(vec![EnumType::Any, EnumType::Footing]),
         "SetAIRugbyBall" => Signature::args(vec![EnumType::Object]),
         "SetAIGroupRelation" => Signature::args(vec![EnumType::Footing, EnumType::Footing, EnumType::Relation]),

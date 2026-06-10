@@ -25,9 +25,18 @@ impl Analyzer {
         &mut self,
         script: &mut Block,
         config: Option<&HashMap<(EnumType, i32), String>>,
+        float_config: Option<&HashMap<(EnumType, u32), String>>,
     ) {
-        let constant_map: Option<HashMap<_, _>> =
-            config.map(|c| c.iter().map(|((t, _), n)| (n.clone(), *t)).collect());
+        // seed the global scope with the type of every named constant (int and float) so that any
+        // script that references one already has its type on hand
+        let mut constant_map: HashMap<String, EnumType> = HashMap::new();
+        for ((t, _), n) in config.into_iter().flatten() {
+            constant_map.insert(n.clone(), *t);
+        }
+        for ((t, _), n) in float_config.into_iter().flatten() {
+            constant_map.insert(n.clone(), *t);
+        }
+        let constant_map = (!constant_map.is_empty()).then_some(constant_map);
         let global_scope = Scope::new_global(constant_map);
         script.set_scope(global_scope);
 
@@ -408,7 +417,7 @@ fn get_expression_type(scope: &SharedScope, expr: &Expression) -> Option<ScriptV
                 _ => None,
             }
         }
-        Expression::Int(_) => Some(ScriptValue::Scalar(EnumType::Any)),
+        Expression::Int(_) | Expression::Float(_) => Some(ScriptValue::Scalar(EnumType::Any)),
         _ => None,
     }
 }

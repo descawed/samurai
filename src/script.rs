@@ -151,6 +151,8 @@ pub fn unformat_script(script: &str) -> String {
 #[derive(Debug, Clone)]
 pub struct ScriptFormatter {
     config: Option<HashMap<(EnumType, i32), String>>,
+    // float-valued constants are keyed by the f32 bit pattern, since f32 is neither Hash nor Eq
+    float_config: Option<HashMap<(EnumType, u32), String>>,
     made_changes: bool,
     quiet: bool,
 }
@@ -159,6 +161,7 @@ impl ScriptFormatter {
     pub fn new() -> Self {
         Self {
             config: None,
+            float_config: None,
             made_changes: false,
             quiet: false,
         }
@@ -201,30 +204,61 @@ impl ScriptFormatter {
             .map(|s| Expression::new_var(s.clone()))
     }
 
-    fn use_constant(&mut self, value_type: EnumType, expr: &mut Expression, accept: &[i32]) {
+    /// Look up the symbolic constant for a float-valued argument of the given type, if any.
+    fn get_float_constant(&self, value_type: EnumType, value: f32) -> Option<Expression> {
+        if !value_type.is_concrete() {
+            return None;
+        }
+
+        self.float_config
+            .as_ref()?
+            .get(&(value_type, value.to_bits()))
+            .map(|s| Expression::new_var(s.clone()))
+    }
+
+    fn use_constant(
+        &mut self,
+        value_type: EnumType,
+        expr: &mut Expression,
+        accept: &[i32],
+        in_assignment: bool,
+    ) {
         if !value_type.is_concrete() {
             return;
         }
 
-        let &Expression::Int(value) = expr.unwrap_global().0 else {
+        // coordinate families are only restored where the developer routed the value through a
+        // named variable (an assignment/declaration). Inline, a number at a coordinate position is
+        // almost always a literal position - including whole numbers written as ints (e.g. a `0`
+        // coordinate, which would otherwise wrongly resolve to NULL via the generic int fallback).
+        if value_type.is_coordinate() && !in_assignment {
             return;
+        }
+
+        let constant = match expr.unwrap_global().0 {
+            &Expression::Int(value) => match self.get_constant(value_type, value, accept) {
+                found @ Some(_) => found,
+                None => {
+                    if !self.quiet {
+                        println!(
+                            "Warning: unexpected value {} for type {:?}",
+                            value, value_type,
+                        );
+                    }
+                    None
+                }
+            },
+            // most float literals are genuine coordinates rather than constants, so a miss here is
+            // expected and we silently leave the literal in place instead of warning
+            &Expression::Float(value) => self.get_float_constant(value_type, value),
+            _ => return,
         };
 
-        match self.get_constant(value_type, value, accept) {
-            Some(constant) => {
-                // if we found a match for a symbolic constant, replace the literal expression with one
-                // referencing the constant
-                *expr = constant;
-                self.made_changes = true;
-            }
-            None => {
-                if !self.quiet {
-                    println!(
-                        "Warning: unexpected value {} for type {:?}",
-                        value, value_type,
-                    );
-                }
-            }
+        // if we found a match for a symbolic constant, replace the literal expression with one
+        // referencing the constant
+        if let Some(constant) = constant {
+            *expr = constant;
+            self.made_changes = true;
         }
     }
 
@@ -239,7 +273,8 @@ impl ScriptFormatter {
                 _ => None,
             });
 
-            self.use_constant(resolved, arg_expr, accept);
+            // inline call arguments are never an assignment context
+            self.use_constant(resolved, arg_expr, accept, false);
         }
     }
 
@@ -247,7 +282,8 @@ impl ScriptFormatter {
         match (args.len(), method, object) {
             // if this is a comparison or assignment to a scalar with a single argument
             (1, "eq" | "lt" | "le" | "gt" | "ge" | "<" | ">" | "=", _) => {
-                self.use_constant(object.get_type(), &mut args[0], NO_SENTINEL);
+                // only `=` (and the declarations below) is an assignment; the others are comparisons
+                self.use_constant(object.get_type(), &mut args[0], NO_SENTINEL, method == "=");
             }
             (_, _, ScriptValue::Object(scope)) => {
                 if let Some(sig) = scope.borrow().lookup_own_function(method) {
@@ -282,7 +318,8 @@ impl ScriptFormatter {
                 if let (Expression::Variable(var), is_global_var) = lhs.unwrap_global()
                     && let Some(obj) = scope.borrow().lookup(var, is_global || is_global_var)
                 {
-                    self.use_constant(obj.get_type(), rhs, NO_SENTINEL);
+                    // a declaration is an assignment context
+                    self.use_constant(obj.get_type(), rhs, NO_SENTINEL, true);
                 }
             }
             _ => (),
@@ -331,6 +368,7 @@ impl ScriptFormatter {
     pub fn use_config<T: AsRef<str>>(&mut self, script: T) -> Result<()> {
         let parsed = parse::parse(script)?;
         let mut map = HashMap::new();
+        let mut float_map = HashMap::new();
         let declarations = parsed.into_iter().filter_map(|s| match s {
             Statement::Expression(e) => e.into_declaration(),
             _ => None,
@@ -340,18 +378,23 @@ impl ScriptFormatter {
                 continue;
             };
 
-            let Expression::Int(value) = value_expr else {
-                continue;
-            };
-
             let Some(constant_type) = EnumType::get_constant_type(&name) else {
                 continue;
             };
 
-            map.insert((constant_type, value), name);
+            match value_expr {
+                Expression::Int(value) => {
+                    map.insert((constant_type, value), name);
+                }
+                Expression::Float(value) => {
+                    float_map.insert((constant_type, value.to_bits()), name);
+                }
+                _ => continue,
+            }
         }
 
         self.config = Some(map);
+        self.float_config = Some(float_map);
         Ok(())
     }
 
@@ -363,9 +406,9 @@ impl ScriptFormatter {
         self.reset();
 
         let mut block = parse::parse(script)?;
-        if self.config.is_some() {
+        if self.config.is_some() || self.float_config.is_some() {
             let mut analyzer = Analyzer::new();
-            analyzer.infer_types(&mut block, self.config.as_ref());
+            analyzer.infer_types(&mut block, self.config.as_ref(), self.float_config.as_ref());
             self.process_block(&mut block);
         }
         let text = block.to_string_top_level();
@@ -443,6 +486,8 @@ mod scorecard {
     struct Config {
         /// Mirrors `ScriptFormatter::use_config`: only int-valued, typed constants.
         int_map: HashMap<(EnumType, i32), String>,
+        /// The float-valued counterpart, keyed by f32 bit pattern.
+        float_map: HashMap<(EnumType, u32), String>,
         /// Every named define (int and float) -> its literal text, for stripping.
         value_text: HashMap<String, String>,
         /// Every named define -> its numeric value, for same-value comparisons.
@@ -455,6 +500,7 @@ mod scorecard {
         let text = String::from_utf8_lossy(&std::fs::read(path).expect("read config.h")).into_owned();
         let line_re = Regex::new(r"(?m)^\s*#([A-Za-z_][A-Za-z0-9_]*)\s*\|\s*(-?\d+(?:\.\d+)?)\s*;").unwrap();
         let mut int_map = HashMap::new();
+        let mut float_map = HashMap::new();
         let mut value_text = HashMap::new();
         let mut value_num = HashMap::new();
         for caps in line_re.captures_iter(&text) {
@@ -463,15 +509,18 @@ mod scorecard {
             let num: f64 = val_str.parse().unwrap();
             value_num.insert(name.clone(), num);
             // last write wins, matching HashMap insertion order in use_config
-            if !val_str.contains('.')
-                && let Ok(ival) = val_str.parse::<i32>()
-                && let Some(t) = EnumType::get_constant_type(&name)
-            {
-                int_map.insert((t, ival), name.clone());
+            if let Some(t) = EnumType::get_constant_type(&name) {
+                if val_str.contains('.') {
+                    if let Ok(fval) = val_str.parse::<f32>() {
+                        float_map.insert((t, fval.to_bits()), name.clone());
+                    }
+                } else if let Ok(ival) = val_str.parse::<i32>() {
+                    int_map.insert((t, ival), name.clone());
+                }
             }
             value_text.insert(name, val_str);
         }
-        Config { int_map, value_text, value_num }
+        Config { int_map, float_map, value_text, value_num }
     }
 
     /// Replace every `$?#NAME` config-constant reference with its literal value, leaving strings,
@@ -576,6 +625,7 @@ mod scorecard {
         let mut sentinel_pair: HashMap<String, usize> = HashMap::new(); // "ref->our" by family
         let mut sentinel_func: HashMap<String, usize> = HashMap::new();
         let mut wrong_func: HashMap<String, usize> = HashMap::new();
+        let mut over_func: HashMap<String, usize> = HashMap::new();
 
         let mut paths: Vec<_> = WalkDir::new(dir.join("samurai"))
             .into_iter()
@@ -608,6 +658,7 @@ mod scorecard {
             let mut our_fmt = ScriptFormatter::new();
             our_fmt.set_quiet(true);
             our_fmt.config = Some(cfg.int_map.clone());
+            our_fmt.float_config = Some(cfg.float_map.clone());
             let ours = match our_fmt.format_script(&literal, None) {
                 Ok(s) => s,
                 Err(_) => {
@@ -658,8 +709,9 @@ mod scorecard {
                     } else {
                         c.structural += 1;
                     }
-                } else if oname.is_some() && is_number(r) {
+                } else if let Some(on) = oname.filter(|_| is_number(r)) {
                     c.over += 1;
+                    *over_func.entry(format!("{} [{}]", func_of(&ot, i), family(on))).or_default() += 1;
                 } else if undollar(r) != undollar(o) {
                     c.structural += 1;
                 }
@@ -688,6 +740,8 @@ mod scorecard {
         for (k, v) in topn(&sentinel_func, 15) { println!("  {v:6}  {k}"); }
         println!("\n-- wrong (B) by enclosing call --");
         for (k, v) in topn(&wrong_func, 20) { println!("  {v:6}  {k}"); }
+        println!("\n-- over-application by enclosing call --");
+        for (k, v) in topn(&over_func, 20) { println!("  {v:6}  {k}"); }
         println!("=============================================================\n");
     }
 }
