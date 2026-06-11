@@ -569,6 +569,9 @@ pub(super) fn well_known_method_arguments(name: &str) -> &'static [EnumType] {
         // SEL(character, prompt): registers a dialogue choice spoken to/by a character. Verified
         // to take a character ID first argument in 100% of occurrences across all game versions.
         "SEL" => &[EnumType::Character],
+        // WEAPONJOIN(character): ClassEventSOL method that stashes its character argument into the
+        // untyped `#Man` attribute. Verified to take a character ID in 100% of its call sites.
+        "WEAPONJOIN" => &[EnumType::Character],
         _ => &[],
     }
 }
