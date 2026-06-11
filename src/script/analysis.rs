@@ -334,16 +334,30 @@ impl Analyzer {
                     deobfuscate(var_name);
                 }
 
+                // well-known method signatures are hard-coded by name (e.g. SEL/WEAPONJOIN's first
+                // argument is always a Character). Their argument types can't be recovered by
+                // following the data flow because the value only ever lands in untyped object
+                // attributes, so we seed the signature - which restores the literals at the call
+                // sites - but keep the *body's* view of those arguments generic. Letting the seeded
+                // type into the body would leak it through the method's internal assignments and
+                // comparisons (e.g. WEAPONJOIN stashes its arg in `#Man`, whose `: 0` initializer
+                // would then be over-applied to CHID_SHUJINKO) without recovering any real constant.
+                let seed = well_known_method_arguments(&var.0);
                 let mut func_scope = block.ensure_scope(Rc::clone(&scope));
                 let function_sig = match scope.borrow().lookup_function(var, is_global) {
                     Some(callback_sig) => {
                         // if this is a known function, push the types into the function scope
                         for (i, arg_name) in args.iter().enumerate() {
+                            let ty = if seed.is_empty() {
+                                callback_sig.borrow().arg_type(i).base()
+                            } else {
+                                EnumType::default()
+                            };
                             self.define(
                                 &mut func_scope,
                                 &arg_name.as_str().into(),
                                 false,
-                                ScriptValue::Scalar(callback_sig.borrow().arg_type(i).base()),
+                                ScriptValue::Scalar(ty),
                             );
                         }
                         callback_sig
@@ -365,29 +379,12 @@ impl Analyzer {
                     }
                 };
 
-                // seed well-known method signatures by name (e.g. SEL's first argument is always
-                // a Character). These types can't be recovered by following the data flow because
-                // the value only ever lands in untyped object attributes, so we hard-code them and
-                // let the rest of the pipeline propagate from here, including into the body scope so
-                // the seeded types are visible while inferring the body.
-                let seed = well_known_method_arguments(&var.0);
                 if !seed.is_empty() {
-                    {
-                        let mut sig_mut = function_sig.borrow_mut();
-                        for (i, &ty) in seed.iter().enumerate() {
-                            if sig_mut.infer_argument(i, ty, NO_SENTINEL) {
-                                self.made_changes = true;
-                            }
+                    let mut sig_mut = function_sig.borrow_mut();
+                    for (i, &ty) in seed.iter().enumerate() {
+                        if sig_mut.infer_argument(i, ty, NO_SENTINEL) {
+                            self.made_changes = true;
                         }
-                    }
-                    for (i, arg_name) in args.iter().enumerate().take(seed.len()) {
-                        let ty = function_sig.borrow().arg_type(i).base();
-                        self.define(
-                            &mut func_scope,
-                            &arg_name.as_str().into(),
-                            false,
-                            ScriptValue::Scalar(ty),
-                        );
                     }
                 }
 
