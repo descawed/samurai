@@ -212,7 +212,7 @@ The debugger allows monitoring the game internals while it runs in PCSX2. It's c
 following:
 
 - Japanese game versions (SLPS-20178 and SLPM-74405)
-- Linux only
+- Windows and Linux
 - Read-only
 
 The `debug` command has no options; it will automatically wait for and attach to a PCSX2 process. Once attached, the
