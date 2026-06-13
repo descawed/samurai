@@ -185,6 +185,22 @@ mod platform_mem {
 
 use platform_mem::{MemoryHandle, find_module_base};
 
+// Locate EEmem in the symbol table (Linux debug builds) and return its address.
+fn find_symbol_address(file: &object::File) -> Option<u64> {
+    file.symbols()
+        .find(|symbol| symbol.name() == Ok(EE_MEM_SYMBOL))
+        .map(|symbol| symbol.address())
+}
+
+// Locate EEmem in the export table (Windows builds) and return its address.
+fn find_export_address(file: &object::File) -> Option<u64> {
+    file.exports()
+        .ok()?
+        .into_iter()
+        .find(|export| export.name() == EE_MEM_SYMBOL.as_bytes())
+        .map(|export| export.address())
+}
+
 pub struct Emulator {
     memory: MemoryHandle,
     ee_mem_base: usize,
@@ -200,34 +216,31 @@ impl Emulator {
             return None;
         }
 
-        // search for EEmem symbol
+        // search for EEmem
         // TODO: error handling
         let data = fs::read(exe_path).ok()?;
         let file = object::File::parse(&*data).ok()?;
         // `relative_address_base` is the image base for PE and 0 for ELF, so subtracting it
-        // converts a symbol's address into an offset relative to the module's load address.
+        // converts the resolved address into an offset relative to the module's load address.
         let relative_base = file.relative_address_base();
-        for symbol in file.symbols() {
-            if !matches!(symbol.name().map(|name| name == EE_MEM_SYMBOL), Ok(true)) {
-                continue;
-            }
 
-            // we've found the PCSX2 process; now find the start of EE memory
-            let module_base = find_module_base(pid, exe_path)?;
-            let ee_mem_ptr = symbol.address() - relative_base + module_base;
+        // Linux builds of PCSX2 expose EEmem as a debug symbol, but Windows builds export it
+        // instead, so check the export table as a fallback when it isn't in the symbol table.
+        let ee_mem_addr = find_symbol_address(&file).or_else(|| find_export_address(&file))?;
 
-            let memory = MemoryHandle::open(pid).ok()?;
-            let mut buf = [0u8; 8];
-            memory.read_at(&mut buf, ee_mem_ptr).ok()?;
-            let ee_mem_base = usize::from_le_bytes(buf);
-            return Some(Self {
-                memory,
-                ee_mem_base,
-                pid,
-            });
-        }
+        // we've found the PCSX2 process; now find the start of EE memory
+        let module_base = find_module_base(pid, exe_path)?;
+        let ee_mem_ptr = ee_mem_addr - relative_base + module_base;
 
-        None
+        let memory = MemoryHandle::open(pid).ok()?;
+        let mut buf = [0u8; 8];
+        memory.read_at(&mut buf, ee_mem_ptr).ok()?;
+        let ee_mem_base = usize::from_le_bytes(buf);
+        Some(Self {
+            memory,
+            ee_mem_base,
+            pid,
+        })
     }
 
     pub fn search_for_emulator(platform: impl Deref<Target = Platform>) -> Option<Self> {
