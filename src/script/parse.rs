@@ -105,13 +105,121 @@ impl<'a> IntoIterator for &'a mut Block {
 }
 //#endregion
 
+/// The keyword form a function definition was written with.
+///
+/// Most definitions use `?F`, but a handful in the shipped scripts use a bare `?` or omit the
+/// keyword entirely. We remember the original form so the formatter can reproduce it verbatim.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum FuncKeyword {
+    Full, // ?F
+    Bare, // ?
+    None, // no keyword at all
+}
+
+/// A parameter in a function definition.
+///
+/// Parameters are matched against body variables by their bare [`name`](Self::name), so the
+/// leading `#` sigil (when present) is tracked separately rather than baked into the name.
+#[derive(Debug, Clone)]
+pub(super) struct Param {
+    sigil: bool,
+    name: String,
+}
+
+impl Param {
+    /// The parameter's bare name, without any leading `#` sigil.
+    pub fn as_str(&self) -> &str {
+        &self.name
+    }
+}
+
+impl Display for Param {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        if self.sigil {
+            write!(f, "#")?;
+        }
+        f.write_str(&self.name)
+    }
+}
+
+/// An argument list for a function or method call.
+///
+/// Wraps the argument expressions but also records how many commas appeared before each argument
+/// and after the last one. This lets the formatter reproduce unusual but syntactically-significant
+/// comma patterns found in the shipped scripts (leading commas, doubled commas, trailing commas).
+/// It derefs to the underlying `Vec<Expression>`, so analysis code can treat it as a plain list;
+/// the comma metadata is only consulted by the formatter.
+#[derive(Debug, Clone)]
+pub(super) struct Args {
+    values: Vec<Expression>,
+    /// Number of commas appearing immediately before each argument. `commas_before[0]` is the
+    /// count of leading commas before the first argument (normally 0); each subsequent entry is
+    /// the number of commas separating an argument from its predecessor (normally 1). Always the
+    /// same length as `values`.
+    commas_before: Vec<usize>,
+    /// Number of trailing commas after the final argument.
+    trailing_commas: usize,
+}
+
+impl Args {
+    pub fn new(values: Vec<Expression>, commas_before: Vec<usize>, trailing_commas: usize) -> Self {
+        debug_assert_eq!(values.len(), commas_before.len());
+        Self {
+            values,
+            commas_before,
+            trailing_commas,
+        }
+    }
+}
+
+impl Deref for Args {
+    type Target = Vec<Expression>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.values
+    }
+}
+
+impl DerefMut for Args {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.values
+    }
+}
+
+impl IntoIterator for Args {
+    type Item = Expression;
+    type IntoIter = std::vec::IntoIter<Self::Item>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.values.into_iter()
+    }
+}
+
+impl<'a> IntoIterator for &'a Args {
+    type Item = &'a Expression;
+    type IntoIter = std::slice::Iter<'a, Expression>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.values.iter()
+    }
+}
+
+impl<'a> IntoIterator for &'a mut Args {
+    type Item = &'a mut Expression;
+    type IntoIter = std::slice::IterMut<'a, Expression>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.values.iter_mut()
+    }
+}
+
 #[derive(Debug, Clone)]
 pub(super) enum Expression {
     ReferenceDeclaration(Box<Expression>, Box<Expression>),
     ValueDeclaration(Box<Expression>, Box<Expression>),
-    FunctionCall(String, Vec<Expression>),
-    MethodCall(Box<Expression>, String, Vec<Expression>),
-    FunctionDefinition(Vec<String>, Block),
+    FunctionCall(String, Args),
+    MethodCall(Box<Expression>, String, Args),
+    FunctionDefinition(FuncKeyword, Vec<Param>, Block),
     TernaryConditional(Box<Expression>, Box<Expression>, Box<Expression>),
     Variable(Variable),
     String(String),
@@ -145,7 +253,7 @@ impl Expression {
         }
     }
 
-    pub fn inner_blocks_mut(&mut self) -> Vec<(&mut [String], &mut Block)> {
+    pub fn inner_blocks_mut(&mut self) -> Vec<(&mut [Param], &mut Block)> {
         match self {
             Expression::ReferenceDeclaration(_, rhs) | Expression::ValueDeclaration(_, rhs) => {
                 rhs.inner_blocks_mut()
@@ -155,7 +263,7 @@ impl Expression {
                 .iter_mut()
                 .flat_map(|a| a.inner_blocks_mut().into_iter())
                 .collect(),
-            Expression::FunctionDefinition(args, block) => vec![(args, block)],
+            Expression::FunctionDefinition(_, args, block) => vec![(args, block)],
             Expression::Global(e) => e.inner_blocks_mut(),
             _ => vec![],
         }
@@ -230,19 +338,27 @@ impl Expression {
         }
     }
 
-    fn write_arg_list(args: &[Self], f: &mut Formatter<'_>) -> std::fmt::Result {
-        if !args.is_empty() {
-            write!(f, " ")?;
-            let mut is_first = true;
-            for arg in args {
-                if !is_first {
+    fn write_arg_list(args: &Args, f: &mut Formatter<'_>) -> std::fmt::Result {
+        for (i, arg) in args.values.iter().enumerate() {
+            let commas = args.commas_before[i];
+            if i == 0 && commas == 0 {
+                // ordinary case: a single space separates the callee from its first argument
+                write!(f, " ")?;
+            } else {
+                // any commas (a leading comma before the first argument, or the separators
+                // between arguments) render with no space before and one space after
+                for _ in 0..commas {
                     write!(f, ", ")?;
                 }
-                is_first = false;
-
-                arg.write_safe(f)?;
             }
+
+            arg.write_safe(f)?;
         }
+
+        for _ in 0..args.trailing_commas {
+            write!(f, ", ")?;
+        }
+
         Ok(())
     }
 }
@@ -270,10 +386,24 @@ impl Display for Expression {
                 write!(f, " {}", method)?;
                 Self::write_arg_list(args, f)
             }
-            Self::FunctionDefinition(args, body) => {
-                write!(f, "?F")?;
+            Self::FunctionDefinition(keyword, args, body) => {
+                let mut need_space = match keyword {
+                    FuncKeyword::Full => {
+                        write!(f, "?F")?;
+                        true
+                    }
+                    FuncKeyword::Bare => {
+                        write!(f, "?")?;
+                        true
+                    }
+                    FuncKeyword::None => false,
+                };
+
                 if !args.is_empty() {
-                    write!(f, " (")?;
+                    if need_space {
+                        write!(f, " ")?;
+                    }
+                    write!(f, "(")?;
                     let mut is_first = true;
                     for arg in args {
                         if !is_first {
@@ -284,9 +414,13 @@ impl Display for Expression {
                         write!(f, "{}", arg)?;
                     }
                     write!(f, ")")?;
+                    need_space = true;
                 }
 
-                write!(f, " {}", body)
+                if need_space {
+                    write!(f, " ")?;
+                }
+                write!(f, "{}", body)
             }
             Self::TernaryConditional(cond, if_true, if_false) => {
                 write!(f, "?I ")?;
@@ -451,11 +585,40 @@ pub(super) fn parser<'src>()
             .padded_by(pad.clone());
 
         let expr = recursive(|expr| {
-            let args = expr
+            // an argument list records how many commas surround each argument so the formatter can
+            // reproduce the original (possibly irregular) comma usage. arguments must still be
+            // separated by at least one comma, but we additionally allow leading commas (a comma
+            // immediately after the callee), doubled commas between arguments, and trailing commas.
+            let comma = just(',').padded_by(pad.clone());
+            let args = comma
                 .clone()
-                .separated_by(just(',').padded_by(pad.clone()).repeated().at_least(1))
-                .collect()
-                .then_ignore(just(',').padded_by(pad.clone()).or_not()); // allow trailing comma
+                .repeated()
+                .count() // leading commas before the first argument
+                .then(expr.clone())
+                .then(
+                    comma
+                        .clone()
+                        .repeated()
+                        .at_least(1)
+                        .count() // separator commas between arguments
+                        .then(expr.clone())
+                        .repeated()
+                        .collect::<Vec<(usize, Expression)>>(),
+                )
+                .then(comma.repeated().count()) // trailing commas
+                .map(|(((leading, first), rest), trailing)| {
+                    let mut values = Vec::with_capacity(rest.len() + 1);
+                    let mut commas_before = Vec::with_capacity(rest.len() + 1);
+                    values.push(first);
+                    commas_before.push(leading);
+                    for (commas, arg) in rest {
+                        values.push(arg);
+                        commas_before.push(commas);
+                    }
+                    Args::new(values, commas_before, trailing)
+                })
+                .or_not()
+                .map(|args| args.unwrap_or_else(|| Args::new(Vec::new(), Vec::new(), 0)));
 
             // https://github.com/zesterer/chumsky/discussions/58
             // if we let the left-hand side of a method call be any expression, we get infinite recursion
@@ -469,7 +632,7 @@ pub(super) fn parser<'src>()
             let method = delimited
                 .then(text::ident().or(one_of("=<>").to_slice()).padded_by(pad.clone()))
                 .then(args.clone())
-                .map(|((o, m), a): ((Expression, &str), Vec<Expression>)| {
+                .map(|((o, m), a): ((Expression, &str), Args)| {
                     Expression::MethodCall(Box::new(o), String::from(m), a)
                 });
 
@@ -499,32 +662,48 @@ pub(super) fn parser<'src>()
             // a small number of scripts have function definitions that are lacking the ?F keyword,
             // and some have only a ? with no F. I don't know if this even works as intended
             // in-game, but for compatibility purposes, we'll parse it.
-            let func_def = just('?')
-                .then_ignore(just('F').or_not())
-                .padded_by(pad.clone())
+            // remember which keyword form the definition used so we can reproduce it. `?F` must be
+            // tried before a bare `?` so the `F` isn't left dangling.
+            let func_keyword = just("?F")
+                .to(FuncKeyword::Full)
+                .or(just('?').to(FuncKeyword::Bare))
                 .or_not()
-                .ignore_then(
-                    just('#')
-                        .or_not()
-                        .ignore_then(text::ident().to_slice())
-                        .map(String::from)
+                .map(|k| k.unwrap_or(FuncKeyword::None));
+
+            // a parameter name may carry a leading `#` sigil (which we preserve) and, unlike most
+            // identifiers, may consist entirely of digits
+            let param = just('#')
+                .or_not()
+                .map(|sigil| sigil.is_some())
+                .then(
+                    one_of(IDENTIFIER_CHARACTERS)
+                        .repeated()
+                        .at_least(1)
+                        .collect::<String>(),
+                )
+                .map(|(sigil, name)| Param { sigil, name });
+
+            let func_def = func_keyword
+                .padded_by(pad.clone())
+                .then(
+                    param
                         .padded_by(pad.clone())
                         .separated_by(just(','))
-                        .collect()
+                        .collect::<Vec<Param>>()
                         .delimited_by(just('('), just(')'))
                         .padded_by(pad.clone())
                         .or_not(),
                 )
                 .then(block.clone())
-                .map(|(a, b)| Expression::FunctionDefinition(a.unwrap_or_else(Vec::new), b.into()));
+                .map(|((keyword, params), b)| {
+                    Expression::FunctionDefinition(keyword, params.unwrap_or_default(), b.into())
+                });
 
             let function =
                 text::ident()
                     .padded_by(pad.clone())
                     .then(args)
-                    .map(|(f, a): (&str, Vec<Expression>)| {
-                        Expression::FunctionCall(String::from(f), a)
-                    });
+                    .map(|(f, a): (&str, Args)| Expression::FunctionCall(String::from(f), a));
 
             let global = just('$')
                 .padded_by(pad.clone())
@@ -800,9 +979,10 @@ mod tests {
             panic!("Statement was not a reference declaration expression");
         };
         assert!(matches!(*var, Expression::Variable(Variable(ref s, None)) if s == "MyFunc"));
-        let Expression::FunctionDefinition(args, body) = *value else {
+        let Expression::FunctionDefinition(keyword, args, body) = *value else {
             panic!("Value was not a function definition");
         };
+        assert_eq!(keyword, FuncKeyword::Full);
         assert!(args.is_empty());
         assert_eq!(body.len(), 1);
     }
@@ -815,12 +995,13 @@ mod tests {
             #a add #b;
         };",
         );
-        let Statement::Expression(Expression::FunctionDefinition(args, body)) = stmt else {
+        let Statement::Expression(Expression::FunctionDefinition(keyword, args, body)) = stmt else {
             panic!("Value was not a function definition");
         };
+        assert_eq!(keyword, FuncKeyword::Full);
         assert_eq!(args.len(), 2);
-        assert_eq!(args[0], "a");
-        assert_eq!(args[1], "b");
+        assert_eq!(args[0].as_str(), "a");
+        assert_eq!(args[1].as_str(), "b");
         assert_eq!(body.len(), 1);
     }
 
@@ -1051,6 +1232,8 @@ mod tests {
                 Expression::Int(0)
             )
         ));
+        // the trailing comma is preserved (a comma always renders with a following space)
+        assert_eq!(stmt.to_string(), "SubEventMode 58, 8, 3, 0, ;");
     }
 
     #[test]
@@ -1066,6 +1249,26 @@ mod tests {
     }
 
     #[test]
+    fn test_duplicate_comma_round_trip() {
+        // the doubled comma between the third and fourth arguments is preserved in the output
+        // (integers are used here because float literals are normalized on formatting)
+        let script = "SetSomething 1, 2, 3, , 4, 5;";
+        assert_eq!(one_statement(script).to_string(), script);
+    }
+
+    #[test]
+    fn test_leading_comma() {
+        // some calls have a comma immediately after the function name
+        let stmt = one_statement("SubEventMode, 58, 8;");
+        let Statement::Expression(Expression::FunctionCall(ref s, ref args)) = stmt else {
+            panic!("Statement was not a function call expression");
+        };
+        assert_eq!(s, "SubEventMode");
+        assert_eq!(args.len(), 2);
+        assert_eq!(stmt.to_string(), "SubEventMode, 58, 8;");
+    }
+
+    #[test]
     fn test_bare_func_def() {
         let stmt = one_statement(
             "
@@ -1078,9 +1281,10 @@ mod tests {
             panic!("Statement was not a reference declaration expression");
         };
         assert!(matches!(*var, Expression::Variable(Variable(ref s, None)) if s == "MyFunc"));
-        let Expression::FunctionDefinition(args, body) = *value else {
+        let Expression::FunctionDefinition(keyword, args, body) = *value else {
             panic!("Value was not a function definition");
         };
+        assert_eq!(keyword, FuncKeyword::None);
         assert!(args.is_empty());
         assert_eq!(body.len(), 1);
     }
@@ -1098,9 +1302,10 @@ mod tests {
             panic!("Statement was not a reference declaration expression");
         };
         assert!(matches!(*var, Expression::Variable(Variable(ref s, None)) if s == "MyFunc"));
-        let Expression::FunctionDefinition(args, body) = *value else {
+        let Expression::FunctionDefinition(keyword, args, body) = *value else {
             panic!("Value was not a function definition");
         };
+        assert_eq!(keyword, FuncKeyword::None);
         assert_eq!(args.len(), 2);
         assert_eq!(body.len(), 1);
     }
@@ -1133,13 +1338,51 @@ mod tests {
             panic!("Statement was not a reference declaration expression");
         };
         assert!(matches!(*var, Expression::Variable(Variable(ref s, None)) if s == "MyFunc"));
-        let Expression::FunctionDefinition(args, body) = *value else {
+        let Expression::FunctionDefinition(keyword, args, body) = *value else {
+            panic!("Value was not a function definition");
+        };
+        assert_eq!(keyword, FuncKeyword::None);
+        assert_eq!(args.len(), 2);
+        // the bare name is preserved for matching, but the formatted form keeps the sigil
+        assert_eq!(args[0].as_str(), "id0");
+        assert_eq!(args[0].to_string(), "id0");
+        assert_eq!(args[1].as_str(), "id1");
+        assert_eq!(args[1].to_string(), "#id1");
+        assert_eq!(body.len(), 1);
+    }
+
+    #[test]
+    fn test_numeric_parameter_name() {
+        let stmt = one_statement(
+            "
+        #MyFunc | (0, 1) {
+            $Print \"my cool function\";
+        };
+        ",
+        );
+        let Statement::Expression(Expression::ReferenceDeclaration(_, value)) = stmt else {
+            panic!("Statement was not a reference declaration expression");
+        };
+        let Expression::FunctionDefinition(_, args, _) = *value else {
             panic!("Value was not a function definition");
         };
         assert_eq!(args.len(), 2);
-        assert_eq!(args[0], "id0");
-        assert_eq!(args[1], "id1");
-        assert_eq!(body.len(), 1);
+        assert_eq!(args[0].as_str(), "0");
+        assert_eq!(args[1].as_str(), "1");
+    }
+
+    #[test]
+    fn test_func_keyword_round_trip() {
+        // each keyword form is reproduced verbatim by the formatter
+        for (input, expected) in [
+            ("#F | ?F (a) { Foo; };", "#F | ?F (a) {\n\tFoo;\n}"),
+            ("#F | ? (a) { Foo; };", "#F | ? (a) {\n\tFoo;\n}"),
+            ("#F | (a) { Foo; };", "#F | (a) {\n\tFoo;\n}"),
+            ("#F | { Foo; };", "#F | {\n\tFoo;\n}"),
+        ] {
+            // the formatted statement carries a trailing semicolon
+            assert_eq!(one_statement(input).to_string(), format!("{expected};"));
+        }
     }
 
     #[test]
@@ -1197,9 +1440,10 @@ mod tests {
             panic!("Statement was not a reference declaration expression");
         };
         assert!(matches!(*var, Expression::Variable(Variable(ref s, None)) if s == "MyFunc"));
-        let Expression::FunctionDefinition(args, body) = *value else {
+        let Expression::FunctionDefinition(keyword, args, body) = *value else {
             panic!("Value was not a function definition");
         };
+        assert_eq!(keyword, FuncKeyword::Bare);
         assert!(args.is_empty());
         assert_eq!(body.len(), 1);
     }

@@ -326,7 +326,7 @@ impl Analyzer {
         }
 
         // continue down the AST
-        if let Some((lhs, Expression::FunctionDefinition(args, block))) = expr.declaration_mut() {
+        if let Some((lhs, Expression::FunctionDefinition(_, args, block))) = expr.declaration_mut() {
             let (lhs_expr, is_global) = lhs.unwrap_global_mut();
             if let Expression::Variable(var) = lhs_expr {
                 if let Variable(var_name, None) = var {
@@ -394,9 +394,11 @@ impl Analyzer {
                 let local_scope = func_scope.borrow_mut();
                 let mut sig_mut = function_sig.borrow_mut();
                 for (i, arg_name) in args.iter().enumerate() {
-                    let inferred = local_scope.lookup_own_scalar(arg_name).unwrap_or_default();
+                    let inferred = local_scope
+                        .lookup_own_scalar(arg_name.as_str())
+                        .unwrap_or_default();
                     let accept = local_scope
-                        .lookup_own_scalar_sentinel(arg_name)
+                        .lookup_own_scalar_sentinel(arg_name.as_str())
                         .unwrap_or(NO_SENTINEL);
                     if sig_mut.infer_argument(i, inferred, accept) {
                         self.made_changes = true;
@@ -520,7 +522,7 @@ fn get_expression_type(scope: &SharedScope, expr: &Expression) -> Option<ScriptV
                 None
             }
         }
-        Expression::FunctionDefinition(args, _) => Some(ScriptValue::Function(Rc::new(
+        Expression::FunctionDefinition(_, args, _) => Some(ScriptValue::Function(Rc::new(
             RefCell::new(Signature::args(vec![EnumType::default(); args.len()])),
         ))),
         Expression::TernaryConditional(_, true_expr, false_expr) => {
