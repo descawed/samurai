@@ -679,7 +679,8 @@ static SIGNATURES: LazyLock<HashMap<&'static str, Signature>> = LazyLock::new(||
         "SetTwoShotCamera" => Signature::args(vec![EnumType::Character, EnumType::Character]),
         "SetVsCamera" => Signature::args(vec![EnumType::Character, EnumType::Character]),
         // SetRotateCamera has no typed arguments
-        "SetCutCamera" => Signature::sig(vec![ArgType::Sentinel { ty: EnumType::Camera, accept: SENTINEL_INIT }]),
+        // PSP scripts confirm the devs did not use constants for calls to SetCutCamera
+        //"SetCutCamera" => Signature::sig(vec![ArgType::Sentinel { ty: EnumType::Camera, accept: SENTINEL_INIT }]),
         // SetCameraMoveSpeed has no typed arguments
         // the event-mode vararg is normally an Event, but a leading INIT switches the remaining
         // arguments to booleans (the reset form `SetEventMode char, INIT, ON/OFF`)
