@@ -309,7 +309,7 @@ impl ScriptFormatter {
         let is_global = is_global || is_global_inner;
         match inner {
             Expression::Variable(var) => scope.borrow().lookup(var, is_global),
-            Expression::FunctionCall(name, _) => scope
+            Expression::FunctionCall(name, _, _) => scope
                 .borrow()
                 .lookup_function(&name.as_str().into(), is_global)
                 .map(ScriptValue::Function),
@@ -355,7 +355,7 @@ impl ScriptFormatter {
                     self.process_method(&obj, method, args);
                 }
             }
-            Expression::FunctionCall(name, args) => {
+            Expression::FunctionCall(name, args, _) => {
                 if let Some(sig) = scope
                     .borrow()
                     .lookup_function(&name.as_str().into(), is_global)
@@ -479,7 +479,7 @@ impl ScriptFormatter {
             }
 
             if let Statement::Expression(Expression::Global(ref expr)) = block[0]
-                && let Expression::FunctionCall(ref name, ref args) = **expr
+                && let Expression::FunctionCall(ref name, ref args, _) = **expr
                 && name == "Include"
                 && args.len() == 1
                 && let Expression::String(ref arg) = args[0]

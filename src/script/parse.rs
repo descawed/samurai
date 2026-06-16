@@ -170,6 +170,11 @@ impl Args {
             trailing_commas,
         }
     }
+
+    /// An empty argument list (no arguments, no commas).
+    pub fn empty() -> Self {
+        Self::new(Vec::new(), Vec::new(), 0)
+    }
 }
 
 impl Deref for Args {
@@ -217,7 +222,10 @@ impl<'a> IntoIterator for &'a mut Args {
 pub(super) enum Expression {
     ReferenceDeclaration(Box<Expression>, Box<Expression>),
     ValueDeclaration(Box<Expression>, Box<Expression>),
-    FunctionCall(String, Args),
+    // the trailing `bool` records whether the callee was written with a leading `#` sigil. Normally
+    // a `#`-prefixed name is a variable, but a few shipped scripts erroneously call functions with
+    // one (e.g. `#DelTaskID $#say_task`); we preserve it so the formatter reproduces it verbatim.
+    FunctionCall(String, Args, bool),
     MethodCall(Box<Expression>, String, Args),
     FunctionDefinition(FuncKeyword, Vec<Param>, Block),
     TernaryConditional(Box<Expression>, Box<Expression>, Box<Expression>),
@@ -259,7 +267,7 @@ impl Expression {
                 rhs.inner_blocks_mut()
             }
             // I don't know if there's any situation where passing a function definition as an argument makes sense, but we'll support it anyway
-            Expression::FunctionCall(_, args) | Expression::MethodCall(_, _, args) => args
+            Expression::FunctionCall(_, args, _) | Expression::MethodCall(_, _, args) => args
                 .iter_mut()
                 .flat_map(|a| a.inner_blocks_mut().into_iter())
                 .collect(),
@@ -277,7 +285,7 @@ impl Expression {
                 f(rhs);
                 rhs.walk_mut(f);
             }
-            Expression::FunctionCall(_, args) => {
+            Expression::FunctionCall(_, args, _) => {
                 for arg in args {
                     f(arg);
                     arg.walk_mut(f);
@@ -324,7 +332,7 @@ impl Expression {
     pub fn is_atom(&self) -> bool {
         match self {
             Self::Int(_) | Self::Float(_) | Self::String(_) | Self::Variable(_) => true,
-            Self::FunctionCall(_, args) => args.is_empty(), // don't need parentheses around a function call with no args
+            Self::FunctionCall(_, args, _) => args.is_empty(), // don't need parentheses around a function call with no args
             Self::Global(e) => e.is_atom(),
             _ => false,
         }
@@ -368,11 +376,14 @@ impl Display for Expression {
         match self {
             Self::ReferenceDeclaration(lhs, rhs) => write!(f, "{} | {}", lhs, rhs),
             Self::ValueDeclaration(lhs, rhs) => write!(f, "{} : {}", lhs, rhs),
-            Self::FunctionCall(name, args) => {
+            Self::FunctionCall(name, args, sigil) => {
                 // as a convention, list definitions are always in parentheses
                 let is_list = name == "list";
                 if is_list {
                     write!(f, "(")?;
+                }
+                if *sigil {
+                    write!(f, "#")?;
                 }
                 write!(f, "{}", name)?;
                 Self::write_arg_list(args, f)?;
@@ -573,7 +584,7 @@ pub(super) fn parser<'src>()
 
     let any_var = global_var.or(var.clone()).padded_by(pad.clone());
 
-    let atom = var.or(string).or(neg_num).or(num);
+    let atom = var.clone().or(string).or(neg_num).or(num);
 
     let stmt = recursive(|stmt| {
         // I used to use delimited_by here, but that seemed to require at least one statement in the
@@ -590,11 +601,14 @@ pub(super) fn parser<'src>()
             // separated by at least one comma, but we additionally allow leading commas (a comma
             // immediately after the callee), doubled commas between arguments, and trailing commas.
             let comma = just(',').padded_by(pad.clone());
-            let args = comma
+            // the body of an argument list: a first argument, any number of subsequent arguments
+            // (each preceded by one or more separator commas), and any trailing commas. This does
+            // *not* allow a leading comma before the first argument; `commas_before[0]` is left at 0
+            // for the caller to overwrite if it permits one. Requiring a first argument means an
+            // empty list doesn't match here, which is what lets `#name` stay a bare variable rather
+            // than being mistaken for a zero-argument sigil-prefixed call.
+            let arg_list_body = expr
                 .clone()
-                .repeated()
-                .count() // leading commas before the first argument
-                .then(expr.clone())
                 .then(
                     comma
                         .clone()
@@ -605,20 +619,32 @@ pub(super) fn parser<'src>()
                         .repeated()
                         .collect::<Vec<(usize, Expression)>>(),
                 )
-                .then(comma.repeated().count()) // trailing commas
-                .map(|(((leading, first), rest), trailing)| {
+                .then(comma.clone().repeated().count()) // trailing commas
+                .map(|((first, rest), trailing)| {
                     let mut values = Vec::with_capacity(rest.len() + 1);
                     let mut commas_before = Vec::with_capacity(rest.len() + 1);
                     values.push(first);
-                    commas_before.push(leading);
+                    commas_before.push(0); // no leading comma by default
                     for (commas, arg) in rest {
                         values.push(arg);
                         commas_before.push(commas);
                     }
                     Args::new(values, commas_before, trailing)
+                });
+
+            // an ordinary argument list additionally permits leading commas (a comma immediately
+            // after the callee), recorded as the comma count before the first argument
+            let args = comma
+                .clone()
+                .repeated()
+                .count()
+                .then(arg_list_body.clone())
+                .map(|(leading, mut args)| {
+                    args.commas_before[0] = leading;
+                    args
                 })
                 .or_not()
-                .map(|args| args.unwrap_or_else(|| Args::new(Vec::new(), Vec::new(), 0)));
+                .map(|args| args.unwrap_or_else(Args::empty));
 
             // https://github.com/zesterer/chumsky/discussions/58
             // if we let the left-hand side of a method call be any expression, we get infinite recursion
@@ -699,11 +725,48 @@ pub(super) fn parser<'src>()
                     Expression::FunctionDefinition(keyword, params.unwrap_or_default(), b.into())
                 });
 
-            let function =
-                text::ident()
-                    .padded_by(pad.clone())
-                    .then(args)
-                    .map(|(f, a): (&str, Args)| Expression::FunctionCall(String::from(f), a));
+            let function = text::ident()
+                .padded_by(pad.clone())
+                .then(args.clone())
+                .map(|(f, a): (&str, Args)| Expression::FunctionCall(String::from(f), a, false));
+
+            // a handful of shipped scripts assign to a global variable that's missing its `#`
+            // sigil, e.g. `$Flag_Fukki = 1`. The bare name would otherwise be eaten by `function`
+            // as a zero-argument call, leaving the `=` to dangle. When a bare identifier is
+            // immediately followed by an assignment/comparison operator we instead treat it as the
+            // (sigil-less) left-hand side of a method call. We represent the name as a no-argument
+            // `FunctionCall`, which formats without a `#` and which analysis already understands as
+            // a possible sigil-less variable reference.
+            let bare_assign = text::ident()
+                .padded_by(pad.clone())
+                .then(one_of("=<>").to_slice().padded_by(pad.clone()))
+                .then(args.clone())
+                .map(|((name, op), a): ((&str, &str), Args)| {
+                    Expression::MethodCall(
+                        Box::new(Expression::FunctionCall(String::from(name), Args::empty(), false)),
+                        String::from(op),
+                        a,
+                    )
+                });
+
+            // the inverse mistake: a function called with a `#` sigil on its name, e.g.
+            // `#DelTaskID $#say_task`. The name parses as a variable, so this is only reached when
+            // the regular `method` parser has already failed (i.e. what follows the variable isn't a
+            // method name). We require at least one argument (via `arg_list_body`) so that a bare
+            // `#var` reference stays a variable, and we reject attribute accesses (`#a#b`) as callees.
+            let sigil_function = var
+                .clone()
+                .padded_by(pad.clone())
+                .then(arg_list_body.clone())
+                .try_map(|(callee, a): (Expression, Args), span| match callee {
+                    Expression::Variable(Variable(name, None)) => {
+                        Ok(Expression::FunctionCall(name, a, true))
+                    }
+                    _ => Err(Rich::custom(
+                        span,
+                        "a sigil-prefixed function call must name a plain variable",
+                    )),
+                });
 
             let global = just('$')
                 .padded_by(pad.clone())
@@ -722,9 +785,16 @@ pub(super) fn parser<'src>()
                 .or(ref_decl)
                 .or(val_decl)
                 .or(global)
+                // `bare_assign` must precede `function` so an assignment to a sigil-less variable
+                // isn't first consumed as a zero-argument call
+                .or(bare_assign)
                 .or(function)
                 .or(ternary)
                 .or(method)
+                // `sigil_function` must follow `method` (so `#obj method` stays a method call) but
+                // precede the bare-atom fallback (so the variable isn't taken alone, dropping its
+                // arguments)
+                .or(sigil_function)
                 .or(atom.and_is(decl_or_method.not()))
                 .or(expr.delimited_by(just('('), just(')')))
                 .padded_by(pad.clone())
@@ -933,7 +1003,7 @@ mod tests {
     fn test_function_call() {
         let stmt = one_statement("Function;");
         assert!(
-            matches!(stmt, Statement::Expression(Expression::FunctionCall(ref s, ref a)) if s == "Function" && a.is_empty())
+            matches!(stmt, Statement::Expression(Expression::FunctionCall(ref s, ref a, _)) if s == "Function" && a.is_empty())
         );
     }
 
@@ -1200,14 +1270,14 @@ mod tests {
         assert_eq!(block.len(), 1);
         assert!(matches!(
             block[0],
-            Statement::Expression(Expression::FunctionCall(_, _))
+            Statement::Expression(Expression::FunctionCall(_, _, _))
         ));
     }
 
     #[test]
     fn test_leading_zero() {
         let stmt = one_statement("SetEventID 09;");
-        let Statement::Expression(Expression::FunctionCall(ref s, ref args)) = stmt else {
+        let Statement::Expression(Expression::FunctionCall(ref s, ref args, _)) =stmt else {
             panic!("Statement was not a function call expression");
         };
         assert_eq!(s, "SetEventID");
@@ -1218,7 +1288,7 @@ mod tests {
     #[test]
     fn test_trailing_comma() {
         let stmt = one_statement("SubEventMode 58, 8, 3, 0,;");
-        let Statement::Expression(Expression::FunctionCall(ref s, ref args)) = stmt else {
+        let Statement::Expression(Expression::FunctionCall(ref s, ref args, _)) =stmt else {
             panic!("Statement was not a function call expression");
         };
         assert_eq!(s, "SubEventMode");
@@ -1241,7 +1311,7 @@ mod tests {
         let stmt = one_statement(
             "SetCameraPos 0, -13.19, 3.96, 4.90, -7.39, 6.96, 9.17, , 0.00, 0.00, 0.00001, 0, 10;",
         );
-        let Statement::Expression(Expression::FunctionCall(ref s, ref args)) = stmt else {
+        let Statement::Expression(Expression::FunctionCall(ref s, ref args, _)) =stmt else {
             panic!("Statement was not a function call expression");
         };
         assert_eq!(s, "SetCameraPos");
@@ -1260,12 +1330,65 @@ mod tests {
     fn test_leading_comma() {
         // some calls have a comma immediately after the function name
         let stmt = one_statement("SubEventMode, 58, 8;");
-        let Statement::Expression(Expression::FunctionCall(ref s, ref args)) = stmt else {
+        let Statement::Expression(Expression::FunctionCall(ref s, ref args, _)) =stmt else {
             panic!("Statement was not a function call expression");
         };
         assert_eq!(s, "SubEventMode");
         assert_eq!(args.len(), 2);
         assert_eq!(stmt.to_string(), "SubEventMode, 58, 8;");
+    }
+
+    #[test]
+    fn test_global_assign_missing_sigil() {
+        // a global variable assignment that's missing its `#` sigil (`$Flag_Fukki = 1` rather than
+        // `$#Flag_Fukki = 1`). the bare name is preserved (no `#` is invented on round-trip).
+        let stmt = one_statement("$Flag_Fukki = 1;");
+        let Statement::Expression(Expression::Global(inner)) = &stmt else {
+            panic!("Statement was not a global");
+        };
+        let Expression::MethodCall(obj, method, args) = inner.as_ref() else {
+            panic!("Global did not contain a method call");
+        };
+        // the sigil-less lhs is represented as a no-argument function call
+        assert!(matches!(**obj, Expression::FunctionCall(ref s, ref a, false) if s == "Flag_Fukki" && a.is_empty()));
+        assert_eq!(method, "=");
+        assert_eq!(args.len(), 1);
+        assert!(matches!(args[0], Expression::Int(1)));
+        assert_eq!(stmt.to_string(), "$Flag_Fukki = 1;");
+    }
+
+    #[test]
+    fn test_function_call_with_sigil() {
+        // a function call written with an erroneous `#` sigil on its name
+        // (`#DelTaskID $#say_task`). the sigil is preserved on round-trip.
+        let stmt = one_statement("#DelTaskID $#say_task;");
+        let Statement::Expression(Expression::FunctionCall(ref name, ref args, sigil)) = stmt else {
+            panic!("Statement was not a function call");
+        };
+        assert_eq!(name, "DelTaskID");
+        assert!(sigil);
+        assert_eq!(args.len(), 1);
+        assert!(matches!(args[0], Expression::Global(_)));
+        assert_eq!(stmt.to_string(), "#DelTaskID $#say_task;");
+    }
+
+    #[test]
+    fn test_sigil_function_does_not_break_variable_or_method() {
+        // a bare `#var` reference must stay a variable, not become a zero-argument sigil call
+        assert!(matches!(
+            one_statement("#foo;"),
+            Statement::Expression(Expression::Variable(_))
+        ));
+        // an attribute access must stay a variable
+        assert!(matches!(
+            one_statement("#a#b;"),
+            Statement::Expression(Expression::Variable(_))
+        ));
+        // a genuine method call must still parse as one
+        assert!(matches!(
+            one_statement("#object method 1, 2;"),
+            Statement::Expression(Expression::MethodCall(_, _, _))
+        ));
     }
 
     #[test]
@@ -1397,7 +1520,8 @@ mod tests {
             )
             .unwrap()
             .into_iter();
-        let Some(Statement::Expression(Expression::FunctionCall(ref s, ref args))) = result.next()
+        let Some(Statement::Expression(Expression::FunctionCall(ref s, ref args, _))) =
+            result.next()
         else {
             panic!("Statement was not a function call expression");
         };

@@ -168,7 +168,7 @@ impl Analyzer {
                 Expression::Variable(var) => {
                     self.update(&scope, var, is_global, ScriptValue::Scalar(final_arg_type))
                 }
-                Expression::FunctionCall(name, args) => {
+                Expression::FunctionCall(name, args, _) => {
                     deobfuscate(name);
                     let name_var = name.as_str().into();
                     // I've seen a few instances of variables (specifically function arguments) being
@@ -308,7 +308,7 @@ impl Analyzer {
                     }
                 }
             }
-            Expression::FunctionCall(name, args) => {
+            Expression::FunctionCall(name, args, _) => {
                 deobfuscate(name);
 
                 // this block is necessary to ensure the borrow is dropped promptly
@@ -505,7 +505,7 @@ fn get_expression_type(scope: &SharedScope, expr: &Expression) -> Option<ScriptV
     let (inner_expr, is_global) = expr.unwrap_global();
     match inner_expr {
         Expression::Variable(var) => scope.borrow().lookup(var, is_global),
-        Expression::FunctionCall(name, _) => scope
+        Expression::FunctionCall(name, _, _) => scope
             .borrow()
             .lookup_function(&name.as_str().into(), is_global)
             .map(|s| s.borrow().return_type())
