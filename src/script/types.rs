@@ -149,11 +149,14 @@ impl EnumType {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum ArgType {
     Fixed(EnumType),
-    /// Nominal type, but for the listed argument values a generic sentinel constant takes priority
-    /// over a type-specific constant of the same value: `-1` -> `INIT`, `0` -> `OFF`, `1` -> `ON`.
-    /// (e.g. `SetCameraPos`'s `Camera` argument accepts `-1` as `INIT` rather than `CAMERA_INIT`,
-    /// but still resolves `0`/`1` to the real `CAMERA_WORLD`/`CAMERA_CHAR`.)
-    Sentinel { ty: EnumType, accept: &'static [i32] },
+    /// Nominal type, but the `accept`/`reject` lists override how specific argument values map to a
+    /// generic sentinel constant (`-1` -> `INIT`, `0` -> `OFF`/`NULL`, `1` -> `ON`):
+    /// - `accept`: the generic sentinel takes priority over a type-specific constant of the same
+    ///   value (e.g. `SetCameraPos`'s `Camera` argument accepts `-1` as `INIT` rather than
+    ///   `CAMERA_INIT`, but still resolves `0`/`1` to the real `CAMERA_WORLD`/`CAMERA_CHAR`).
+    /// - `reject`: the generic sentinel fallback is suppressed and the value is left as a bare
+    ///   literal (e.g. `SetFixCamera`'s `-1` is a clear flag, not `#INIT`).
+    Sentinel { ty: EnumType, accept: &'static [i32], reject: &'static [i32] },
     /// Type chosen by the literal value of argument `on` (e.g. `SetCharAction` argument 2 selects
     /// the type of argument 3). Resolves to `Any` if argument `on` isn't a known literal.
     Switch {
@@ -186,6 +189,8 @@ impl From<EnumType> for ArgType {
 pub(super) const NO_SENTINEL: &[i32] = &[];
 const SENTINEL_INIT: &[i32] = &[-1];
 const SENTINEL_OFF: &[i32] = &[0];
+/// Sentinel-reject list: values left as bare literals instead of resolving to a generic sentinel.
+const REJECT_INIT: &[i32] = &[-1];
 
 impl ArgType {
     /// The representative type for propagating into variables, ignoring value-based conditions.
@@ -197,15 +202,15 @@ impl ArgType {
         }
     }
 
-    /// Resolve to a concrete type plus the list of argument values eligible for sentinel priority,
-    /// given the literal values of all preceding arguments (`None` where an argument wasn't a
-    /// literal). The accept list is empty for everything but `Sentinel`.
-    pub fn resolve(&self, prior: &[Option<i32>]) -> (EnumType, &'static [i32]) {
+    /// Resolve to a concrete type plus the sentinel `accept`/`reject` lists, given the literal
+    /// values of all preceding arguments (`None` where an argument wasn't a literal). Both lists are
+    /// empty for everything but `Sentinel`.
+    pub fn resolve(&self, prior: &[Option<i32>]) -> (EnumType, &'static [i32], &'static [i32]) {
         match self {
-            Self::Fixed(t) => (*t, NO_SENTINEL),
-            Self::Sentinel { ty, accept } => (*ty, accept),
+            Self::Fixed(t) => (*t, NO_SENTINEL, NO_SENTINEL),
+            Self::Sentinel { ty, accept, reject } => (*ty, accept, reject),
             Self::Switch { on, cases, default } => match prior.get(*on).copied().flatten() {
-                None => (EnumType::Any, NO_SENTINEL),
+                None => (EnumType::Any, NO_SENTINEL, NO_SENTINEL),
                 Some(v) => (
                     cases
                         .iter()
@@ -213,13 +218,14 @@ impl ArgType {
                         .map(|(_, t)| *t)
                         .unwrap_or(*default),
                     NO_SENTINEL,
+                    NO_SENTINEL,
                 ),
             },
             Self::SwitchAfter { base, trigger, then } => {
                 if prior.iter().flatten().any(|v| v == trigger) {
-                    (*then, NO_SENTINEL)
+                    (*then, NO_SENTINEL, NO_SENTINEL)
                 } else {
-                    (*base, NO_SENTINEL)
+                    (*base, NO_SENTINEL, NO_SENTINEL)
                 }
             }
         }
@@ -656,7 +662,7 @@ static SIGNATURES: LazyLock<HashMap<&'static str, Signature>> = LazyLock::new(||
         // arguments are character ids or world coordinates depending on the camera mode, then
         // potentially one or more booleans at the end (see cases)
         "SetCameraPos" => Signature::sig(vec![
-            ArgType::Sentinel { ty: EnumType::Camera, accept: SENTINEL_INIT },
+            ArgType::Sentinel { ty: EnumType::Camera, accept: SENTINEL_INIT, reject: NO_SENTINEL },
             ArgType::Switch { on: 0, cases: CAMERA_POS_ARG1_CASES, default: EnumType::Any },
             ArgType::Switch { on: 0, cases: CAMERA_POS_ARG2_CASES, default: EnumType::Any },
             ArgType::Fixed(EnumType::Any),
@@ -675,7 +681,10 @@ static SIGNATURES: LazyLock<HashMap<&'static str, Signature>> = LazyLock::new(||
         ]),
         "SetBustupCamera" => Signature::args(vec![EnumType::Character]),
         "SetSoloCamera" => Signature::args(vec![EnumType::Character]),
-        "SetFixCamera" => Signature::args(vec![EnumType::Character]),
+        // a lone `-1` here is a clear flag, not `#INIT`, so leave it as a bare literal
+        "SetFixCamera" => Signature::sig(vec![
+            ArgType::Sentinel { ty: EnumType::Character, accept: NO_SENTINEL, reject: REJECT_INIT },
+        ]),
         "SetTwoShotCamera" => Signature::args(vec![EnumType::Character, EnumType::Character]),
         "SetVsCamera" => Signature::args(vec![EnumType::Character, EnumType::Character]),
         // SetRotateCamera has no typed arguments
@@ -699,7 +708,7 @@ static SIGNATURES: LazyLock<HashMap<&'static str, Signature>> = LazyLock::new(||
         // are the move goal (MAPOUT), or #INIT to clear
         "SetPosLineAction" => Signature::sig(vec![
             ArgType::Fixed(EnumType::Any),
-            ArgType::Sentinel { ty: EnumType::MapOut, accept: SENTINEL_INIT },
+            ArgType::Sentinel { ty: EnumType::MapOut, accept: SENTINEL_INIT, reject: NO_SENTINEL },
             ArgType::Fixed(EnumType::MapOut),
             ArgType::Fixed(EnumType::MapOut),
         ]),
@@ -777,7 +786,7 @@ static SIGNATURES: LazyLock<HashMap<&'static str, Signature>> = LazyLock::new(||
         // arg 2 is an animation, except value 0 which is the OFF sentinel; arg 3 is a boolean
         "SetSayMotion" => Signature::sig(vec![
             ArgType::Fixed(EnumType::Character),
-            ArgType::Sentinel { ty: EnumType::Animation, accept: SENTINEL_OFF },
+            ArgType::Sentinel { ty: EnumType::Animation, accept: SENTINEL_OFF, reject: NO_SENTINEL },
             ArgType::Fixed(EnumType::Boolean),
         ]),
         "SetTalkSelect" => Signature::args(vec![EnumType::Character]),
@@ -896,7 +905,7 @@ impl Signature {
         let resolved = if accept.is_empty() {
             ArgType::Fixed(base)
         } else {
-            ArgType::Sentinel { ty: base, accept }
+            ArgType::Sentinel { ty: base, accept, reject: NO_SENTINEL }
         };
         let changed = self.arguments[index] != resolved;
         self.arguments[index] = resolved;
@@ -921,8 +930,8 @@ impl Signature {
                 // a plain `Fixed` arg adopts the other side's inferred `Sentinel` (e.g. SAY's
                 // motion arg, recovered through a list slot, must keep its `0→OFF` behavior
                 // across the re-declarations that reprocessing a `?F` definition produces)
-                (ArgType::Fixed(our), ArgType::Sentinel { ty, accept }) => {
-                    *our_arg = ArgType::Sentinel { ty: our.choose(*ty), accept };
+                (ArgType::Fixed(our), ArgType::Sentinel { ty, accept, reject }) => {
+                    *our_arg = ArgType::Sentinel { ty: our.choose(*ty), accept, reject };
                 }
                 (ArgType::Fixed(our), _) => {
                     *our_arg = ArgType::Fixed(our.choose(their_arg.base()));

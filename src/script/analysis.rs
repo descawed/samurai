@@ -149,7 +149,8 @@ impl Analyzer {
         let mut prior: Vec<Option<i32>> = Vec::with_capacity(args.len());
         for (i, arg_expr) in args.iter_mut().enumerate() {
             let arg_type = { signature.borrow().arg_type(i) };
-            let (final_arg_type, sentinel_accept) = arg_type.resolve(&prior);
+            // `reject` only affects literal substitution at the call site, not type inference
+            let (final_arg_type, sentinel_accept, _) = arg_type.resolve(&prior);
             let literal = match arg_expr.unwrap_global().0 {
                 &Expression::Int(value) => Some(value),
                 _ => None,

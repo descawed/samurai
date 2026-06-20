@@ -181,7 +181,13 @@ impl ScriptFormatter {
         self.in_attribute = false;
     }
 
-    fn get_constant(&self, value_type: EnumType, value: i32, accept: &[i32]) -> Option<Expression> {
+    fn get_constant(
+        &self,
+        value_type: EnumType,
+        value: i32,
+        accept: &[i32],
+        reject: &[i32],
+    ) -> Option<Expression> {
         if !value_type.is_concrete() {
             return None;
         }
@@ -202,10 +208,17 @@ impl ScriptFormatter {
         }
         config
             .get(&(value_type, value))
-            .or_else(|| match value {
-                -1 => config.get(&(EnumType::Initialize, -1)),
-                0 => config.get(&(EnumType::Null, 0)),
-                _ => None,
+            // a rejected value is a deliberate literal at this position, so skip the generic
+            // INIT/NULL fallback that would otherwise apply when there's no type-specific constant
+            .or_else(|| {
+                if reject.contains(&value) {
+                    return None;
+                }
+                match value {
+                    -1 => config.get(&(EnumType::Initialize, -1)),
+                    0 => config.get(&(EnumType::Null, 0)),
+                    _ => None,
+                }
             })
             .map(|s| Expression::new_var(s.clone()))
     }
@@ -227,6 +240,7 @@ impl ScriptFormatter {
         value_type: EnumType,
         expr: &mut Expression,
         accept: &[i32],
+        reject: &[i32],
         in_assignment: bool,
     ) {
         if !value_type.is_concrete() {
@@ -248,10 +262,11 @@ impl ScriptFormatter {
         }
 
         let constant = match expr.unwrap_global().0 {
-            &Expression::Int(value) => match self.get_constant(value_type, value, accept) {
+            &Expression::Int(value) => match self.get_constant(value_type, value, accept, reject) {
                 found @ Some(_) => found,
                 None => {
-                    if !self.quiet {
+                    // a rejected value is an intentional literal, so don't flag it as unexpected
+                    if !self.quiet && !reject.contains(&value) {
                         println!(
                             "Warning: unexpected value {} for type {:?}",
                             value, value_type,
@@ -283,7 +298,7 @@ impl ScriptFormatter {
         let mut prior: Vec<Option<i32>> = Vec::with_capacity(args.len());
         for (i, arg_expr) in args.iter_mut().enumerate() {
             let arg_type = { signature.borrow().arg_type(i) };
-            let (resolved, accept) = arg_type.resolve(&prior);
+            let (resolved, accept, reject) = arg_type.resolve(&prior);
             // record this argument's literal value before it may be replaced with a constant
             prior.push(match arg_expr.unwrap_global().0 {
                 &Expression::Int(value) => Some(value),
@@ -291,7 +306,7 @@ impl ScriptFormatter {
             });
 
             // inline call arguments are never an assignment context
-            self.use_constant(resolved, arg_expr, accept, false);
+            self.use_constant(resolved, arg_expr, accept, reject, false);
         }
     }
 
@@ -333,7 +348,7 @@ impl ScriptFormatter {
             // if this is a comparison or assignment to a scalar with a single argument
             (1, "eq" | "lt" | "le" | "gt" | "ge" | "<" | ">" | "=", _) => {
                 // only `=` (and the declarations below) is an assignment; the others are comparisons
-                self.use_constant(object.get_type(), &mut args[0], NO_SENTINEL, method == "=");
+                self.use_constant(object.get_type(), &mut args[0], NO_SENTINEL, NO_SENTINEL, method == "=");
             }
             (_, _, ScriptValue::Object(scope)) => {
                 if let Some(sig) = scope.borrow().lookup_own_function(method) {
@@ -368,7 +383,7 @@ impl ScriptFormatter {
                     && let Some(obj) = scope.borrow().lookup(var, is_global || is_global_var)
                 {
                     // a declaration is an assignment context
-                    self.use_constant(obj.get_type(), rhs, NO_SENTINEL, true);
+                    self.use_constant(obj.get_type(), rhs, NO_SENTINEL, NO_SENTINEL, true);
                 }
             }
             _ => (),
