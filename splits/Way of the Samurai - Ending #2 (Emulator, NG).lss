@@ -1,0 +1,82 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Run version="1.7.0">
+  <GameIcon/>
+  <GameName>Way of the Samurai</GameName>
+  <CategoryName>Ending #2</CategoryName>
+  <Metadata>
+    <Run id=""/>
+    <Platform usesEmulator="True">PlayStation 2</Platform>
+    <Region>JPN / NTSC</Region>
+    <Variables>
+      <Variable name="Platform">Emulator</Variable>
+      <Variable name="Mode">NG</Variable>
+    </Variables>
+    <CustomVariables>
+      <Variable name="SamuraiEnding">2</Variable>
+      <Variable name="SamuraiNewGame">NG</Variable>
+    </CustomVariables>
+  </Metadata>
+  <Offset>00:00:00</Offset>
+  <AttemptCount>0</AttemptCount>
+  <AttemptHistory/>
+  <Segments>
+    <Segment>
+      <Name>Phase 0 Event 2</Name>
+    </Segment>
+    <Segment>
+      <Name>Phase 0 Event 0</Name>
+    </Segment>
+    <Segment>
+      <Name>Phase 1 Event 26</Name>
+    </Segment>
+    <Segment>
+      <Name>Phase 1 Event 4</Name>
+    </Segment>
+    <Segment>
+      <Name>Phase 1 Event 3</Name>
+    </Segment>
+    <Segment>
+      <Name>Phase 2 Event 17</Name>
+    </Segment>
+    <Segment>
+      <Name>Phase 2 Event 2</Name>
+    </Segment>
+    <Segment>
+      <Name>Phase 3 Event 3</Name>
+    </Segment>
+    <Segment>
+      <Name>Phase 3 Event 2</Name>
+    </Segment>
+    <Segment>
+      <Name>Phase 3 Event 14</Name>
+    </Segment>
+    <Segment>
+      <Name>Phase 3 Event 15</Name>
+    </Segment>
+    <Segment>
+      <Name>Phase 3 Event 16</Name>
+    </Segment>
+    <Segment>
+      <Name>Phase 3 Event 13</Name>
+    </Segment>
+    <Segment>
+      <Name>Phase 4 Event 4</Name>
+    </Segment>
+    <Segment>
+      <Name>Phase 4 Event 2</Name>
+    </Segment>
+    <Segment>
+      <Name>Phase 4 Event 19</Name>
+    </Segment>
+    <Segment>
+      <Name>Phase 5 Event 2</Name>
+    </Segment>
+    <Segment>
+      <Name>Phase 5 Event 25</Name>
+    </Segment>
+    <Segment>
+      <Name>Phase 5 Event 26</Name>
+    </Segment>
+  </Segments>
+  <AutoSplitterSettings/>
+</Run>
