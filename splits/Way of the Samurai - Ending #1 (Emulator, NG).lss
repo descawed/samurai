@@ -1,0 +1,106 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Run version="1.7.0">
+  <GameIcon/>
+  <GameName>Way of the Samurai</GameName>
+  <CategoryName>Ending #1</CategoryName>
+  <Metadata>
+    <Run id=""/>
+    <Platform usesEmulator="True">PlayStation 2</Platform>
+    <Region>JPN / NTSC</Region>
+    <Variables>
+      <Variable name="Platform">Emulator</Variable>
+      <Variable name="Mode">NG</Variable>
+    </Variables>
+    <CustomVariables>
+      <Variable name="SamuraiEnding">1</Variable>
+      <Variable name="SamuraiNewGame">NG</Variable>
+    </CustomVariables>
+  </Metadata>
+  <Offset>00:00:00</Offset>
+  <AttemptCount>0</AttemptCount>
+  <AttemptHistory/>
+  <Segments>
+    <Segment>
+      <Name>Phase 0 Event 2</Name>
+    </Segment>
+    <Segment>
+      <Name>Phase 0 Event 0</Name>
+    </Segment>
+    <Segment>
+      <Name>Phase 1 Event 24</Name>
+    </Segment>
+    <Segment>
+      <Name>Phase 1 Event 6</Name>
+    </Segment>
+    <Segment>
+      <Name>Phase 1 Event 0</Name>
+    </Segment>
+    <Segment>
+      <Name>Phase 1 Event 14</Name>
+    </Segment>
+    <Segment>
+      <Name>Phase 1 Event 20</Name>
+    </Segment>
+    <Segment>
+      <Name>Phase 1 Event 1</Name>
+    </Segment>
+    <Segment>
+      <Name>Phase 2 Event 19</Name>
+    </Segment>
+    <Segment>
+      <Name>Phase 2 Event 1</Name>
+    </Segment>
+    <Segment>
+      <Name>Phase 3 Event 8</Name>
+    </Segment>
+    <Segment>
+      <Name>Phase 3 Event 17</Name>
+    </Segment>
+    <Segment>
+      <Name>Phase 3 Event 3</Name>
+    </Segment>
+    <Segment>
+      <Name>Phase 3 Event 0</Name>
+    </Segment>
+    <Segment>
+      <Name>Phase 4 Event 4</Name>
+    </Segment>
+    <Segment>
+      <Name>Phase 4 Event 0</Name>
+    </Segment>
+    <Segment>
+      <Name>Phase 4 Event 9</Name>
+    </Segment>
+    <Segment>
+      <Name>Phase 4 Event 1</Name>
+    </Segment>
+    <Segment>
+      <Name>Phase 4 Event 12</Name>
+    </Segment>
+    <Segment>
+      <Name>Phase 5 Event 5</Name>
+    </Segment>
+    <Segment>
+      <Name>Phase 5 Event 12</Name>
+    </Segment>
+    <Segment>
+      <Name>Phase 5 Event 10</Name>
+    </Segment>
+    <Segment>
+      <Name>Phase 5 Event 3</Name>
+    </Segment>
+    <Segment>
+      <Name>Phase 5 Event 20</Name>
+    </Segment>
+    <Segment>
+      <Name>Phase 5 Event 21</Name>
+    </Segment>
+    <Segment>
+      <Name>Phase 5 Event 23</Name>
+    </Segment>
+    <Segment>
+      <Name>Phase 5 Event 24</Name>
+    </Segment>
+  </Segments>
+  <AutoSplitterSettings/>
+</Run>
