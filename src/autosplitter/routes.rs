@@ -179,6 +179,40 @@ impl Route {
 pub static ROUTES: &[Route] = &[
     Route {
         category: Category {
+            ending: 1,
+            new_game_plus: false,
+        },
+        events: &[
+            (0, 0), // Tsubohachi and Suzu at bridge
+            (1, 24), // shrine
+            (1, 6), // Ipponmatsu
+            (1, 0), // join Kurou
+            (1, 14), // Ipponmatsu
+            (1, 20), // Shiretoko at shrine
+            (1, 1), // Amaguri shakedown
+            (2, 19), // railway
+            (2, 1), // join Akadama
+            (3, 8), // railway
+            (3, 17), // iron foundry
+            (3, 3), // bridge
+            (3, 0), // Murasaki and Inokashira at shrine
+            (4, 4), // bridge
+            (4, 0), // iron foundry
+            (4, 9), // railway
+            (4, 1), // Kitcho
+            (4, 12), // Hyuga at shrine
+            (5, 5), // bridge
+            (5, 12), // iron foundry
+            (5, 10), // railway
+            (5, 3), // fight government at Akadama
+            (5, 20), // fight government at railway
+            (5, 21), // fight government at station
+            (5, 23), // fight government at bridge
+            (5, 24), // Tamagawa at shrine
+        ]
+    },
+    Route {
+        category: Category {
             ending: 2,
             new_game_plus: false,
         },
