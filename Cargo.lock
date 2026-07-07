@@ -2203,7 +2203,6 @@ dependencies = [
  "pathdiff",
  "quick-xml",
  "ratatui",
- "regex",
  "serde",
  "strum 0.28.0",
  "sysinfo",

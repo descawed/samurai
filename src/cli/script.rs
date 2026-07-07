@@ -83,8 +83,10 @@ pub fn unformat_script(
     output_path: Option<&Path>,
     config_path: Option<&Path>,
     encoding: Encoding,
+    obfuscate: bool,
 ) -> anyhow::Result<()> {
     let mut formatter = ScriptFormatter::new();
+    formatter.set_obfuscate(obfuscate);
     if let Some(path) = config_path {
         let config_text = fs::read_to_string(path)?;
         formatter.use_config(&config_text)?;

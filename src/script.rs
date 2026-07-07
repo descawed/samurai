@@ -1,7 +1,6 @@
 use std::collections::HashMap;
 
 use anyhow::Result;
-use regex::Regex;
 
 mod analysis;
 mod parse;
@@ -9,7 +8,7 @@ mod types;
 
 use analysis::Analyzer;
 use parse::{Block, Conditional, Expression, Statement};
-use types::{EnumType, ScriptValue, SharedScope, SharedSignature, Variable};
+use types::{EnumType, ScriptValue, SharedScope, SharedSignature, Variable, obfuscate};
 
 fn start_line(
     line_start: &mut bool,
@@ -153,6 +152,7 @@ pub struct ScriptFormatter {
     config: Option<HashMap<(EnumType, i32), String>>,
     made_changes: bool,
     quiet: bool,
+    obfuscate: bool,
 }
 
 impl ScriptFormatter {
@@ -161,11 +161,16 @@ impl ScriptFormatter {
             config: None,
             made_changes: false,
             quiet: false,
+            obfuscate: false,
         }
     }
 
     pub fn set_quiet(&mut self, quiet: bool) {
         self.quiet = quiet;
+    }
+
+    pub fn set_obfuscate(&mut self, obfuscate: bool) {
+        self.obfuscate = obfuscate;
     }
 
     fn reset(&mut self) {
@@ -361,35 +366,115 @@ impl ScriptFormatter {
         })
     }
 
-    pub fn unformat_script<T: AsRef<str>>(&self, script: T) -> Result<String> {
-        if self.config.is_some() {
-            let mut block = parse::parse(script)?;
-            if block.is_empty() {
-                return Ok(String::new());
-            }
-
-            if let Statement::Expression(Expression::Global(ref expr)) = block[0]
-                && let Expression::FunctionCall(ref name, ref args) = **expr
-                && name == "Include"
-                && args.len() == 1
-                && let Expression::String(ref arg) = args[0]
-                && arg == "config.h"
-            {
-                // remove the config.h include
-                block.remove(0);
-            }
-
-            let mut text = block.to_string_top_level();
-            for ((_, value), name) in self.config.as_ref().unwrap().iter() {
-                let re = Regex::new(&format!("\\$#{}\\b", name))?;
-                let string_value = value.to_string();
-                text = re.replace_all(&text, string_value.as_str()).into_owned();
-            }
-
-            Ok(unformat_script(text.as_str()))
-        } else {
-            Ok(unformat_script(script.as_ref()))
+    /// Replace symbolic constants with their literal values and function names with their
+    /// obfuscated equivalents in an expression
+    ///
+    /// `allow_constants` should be false when the expression names a variable being declared or
+    /// initialized, as such a variable is not a constant reference even if it shares a name with
+    /// a constant.
+    fn unformat_expression(
+        &self,
+        expr: &mut Expression,
+        constants: &HashMap<&str, i32>,
+        allow_constants: bool,
+    ) {
+        // replace references to config constants with their literal values
+        if allow_constants
+            && let (Expression::Variable(Variable(name, None)), _) = expr.unwrap_global()
+            && let Some(&value) = constants.get(name.as_str())
+        {
+            *expr = Expression::Int(value);
+            return;
         }
+
+        let (expr, _) = expr.unwrap_global_mut();
+        match expr {
+            Expression::ReferenceDeclaration(lhs, rhs) | Expression::ValueDeclaration(lhs, rhs) => {
+                if self.obfuscate
+                    && matches!(rhs.as_ref(), Expression::FunctionDefinition(_, _))
+                    && let (Expression::Variable(Variable(name, None)), _) =
+                        lhs.unwrap_global_mut()
+                {
+                    // this may be a global event callback declaration; attempt to obfuscate
+                    obfuscate(name);
+                }
+
+                self.unformat_expression(lhs, constants, false);
+                self.unformat_expression(rhs, constants, true);
+            }
+            Expression::FunctionCall(name, args) => {
+                if self.obfuscate {
+                    obfuscate(name);
+                }
+                for arg in args {
+                    self.unformat_expression(arg, constants, true);
+                }
+            }
+            Expression::MethodCall(object, _, args) => {
+                self.unformat_expression(object, constants, true);
+                for arg in args {
+                    self.unformat_expression(arg, constants, true);
+                }
+            }
+            Expression::TernaryConditional(condition, true_expr, false_expr) => {
+                self.unformat_expression(condition, constants, true);
+                self.unformat_expression(true_expr, constants, true);
+                self.unformat_expression(false_expr, constants, true);
+            }
+            Expression::FunctionDefinition(_, block) => {
+                self.unformat_block(block, constants);
+            }
+            _ => (),
+        }
+    }
+
+    /// Replace symbolic constants with their literal values and function names with their
+    /// obfuscated equivalents in a block
+    fn unformat_block(&self, block: &mut Block, constants: &HashMap<&str, i32>) {
+        for stmt in block.iter_mut() {
+            match stmt {
+                Statement::ObjectInitialization(expr, init_block) => {
+                    self.unformat_expression(expr, constants, false);
+                    self.unformat_block(init_block, constants);
+                }
+                Statement::WhileLoop(expr, loop_block) => {
+                    self.unformat_expression(expr, constants, true);
+                    self.unformat_block(loop_block, constants);
+                }
+                Statement::Conditional(conditional, else_block) => {
+                    let mut condition = Some(conditional);
+                    while let Some(Conditional(expr, condition_block, next_condition)) = condition {
+                        self.unformat_expression(expr, constants, true);
+                        self.unformat_block(condition_block, constants);
+                        condition = next_condition.as_deref_mut();
+                    }
+                    if let Some(else_block) = else_block {
+                        self.unformat_block(else_block, constants);
+                    }
+                }
+                Statement::Expression(expr) => {
+                    self.unformat_expression(expr, constants, true);
+                }
+                _ => (),
+            }
+        }
+    }
+
+    pub fn unformat_script<T: AsRef<str>>(&self, script: T) -> Result<String> {
+        if self.config.is_none() && !self.obfuscate {
+            return Ok(unformat_script(script.as_ref()));
+        }
+
+        let mut block = parse::parse(script)?;
+        let constants: HashMap<&str, i32> = self
+            .config
+            .iter()
+            .flatten()
+            .map(|(&(_, value), name)| (name.as_str(), value))
+            .collect();
+        self.unformat_block(&mut block, &constants);
+
+        Ok(unformat_script(block.to_string_top_level().as_str()))
     }
 }
 

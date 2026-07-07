@@ -428,7 +428,21 @@ pub fn deobfuscate(name: &mut String) {
     }
 }
 
-// TODO: re-obfuscate
+/// The inverse of [`FUNCTION_OBFUSCATION_MAP`]: a mapping of unobfuscated function names to the
+/// obfuscated names used in later versions of the game
+static FUNCTION_REOBFUSCATION_MAP: LazyLock<HashMap<&'static str, &'static str>> =
+    LazyLock::new(|| {
+        FUNCTION_OBFUSCATION_MAP
+            .iter()
+            .map(|(&obfuscated_name, &name)| (name, obfuscated_name))
+            .collect()
+    });
+
+pub fn obfuscate(name: &mut String) {
+    if let Some(&obfuscated_name) = FUNCTION_REOBFUSCATION_MAP.get(name.as_str()) {
+        *name = String::from(obfuscated_name);
+    }
+}
 
 static SIGNATURES: LazyLock<HashMap<&'static str, Signature>> = LazyLock::new(|| {
     hash_map! {

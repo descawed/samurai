@@ -132,8 +132,11 @@ fn cli() -> Command {
                                 .default_value("shift-jis")
                         )
                         .arg(
-                            arg!(-c --config <CONFIG> "Path to config.h. If provided, the include of config.h from the formatter will be removed and symbolic constants from the config will be replaced with literals.")
+                            arg!(-c --config <CONFIG> "Path to config.h. If provided, symbolic constants from the config will be replaced with literals.")
                                 .value_parser(clap::value_parser!(PathBuf))
+                        )
+                        .arg(
+                            arg!(-b --obfuscate "Replace function names with the obfuscated names used by later versions of the game")
                         )
                         .arg(
                             arg!(<SCRIPT> "Path to script file")
@@ -400,12 +403,14 @@ fn main() -> Result<()> {
                 let encoding =
                     Encoding::from_str(unformat_matches.get_one::<String>("encoding").unwrap())?;
                 let config_path = unformat_matches.get_one::<PathBuf>("config");
+                let obfuscate = unformat_matches.get_flag("obfuscate");
 
                 unformat_script(
                     script_path,
                     output_path.map(PathBuf::as_path),
                     config_path.map(PathBuf::as_path),
                     encoding,
+                    obfuscate,
                 )?;
             }
             _ => unreachable!(),
