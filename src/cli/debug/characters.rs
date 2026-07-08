@@ -85,7 +85,7 @@ fn describe_watch_type(chara: &Character) -> String {
     watch_type
 }
 
-fn detail_lines(chara: &Character, data: &CharacterData) -> Vec<Line<'static>> {
+fn detail_lines(address: u32, chara: &Character, data: &CharacterData) -> Vec<Line<'static>> {
     let position = chara.position;
     let active_events: Vec<&str> = chara
         .event_mode_flags()
@@ -100,6 +100,7 @@ fn detail_lines(chara: &Character, data: &CharacterData) -> Vec<Line<'static>> {
     let event_line = format!("{:08X} ({})", chara.event_modes, events);
 
     vec![
+        detail("Address", format!("{address:08X}")),
         detail("Type ID", data.chara_type_id.to_string()),
         detail("Level", data.level.to_string()),
         detail(
@@ -159,10 +160,10 @@ fn detail_lines(chara: &Character, data: &CharacterData) -> Vec<Line<'static>> {
     ]
 }
 
-fn build_item(chara: &Character, data: &CharacterData, expanded: bool) -> ListItem<'static> {
+fn build_item(address: u32, chara: &Character, data: &CharacterData, expanded: bool) -> ListItem<'static> {
     let mut lines = vec![summary_line(data)];
     if expanded {
-        lines.extend(detail_lines(chara, data));
+        lines.extend(detail_lines(address, chara, data));
     }
     ListItem::new(lines)
 }
@@ -178,7 +179,7 @@ pub fn render(
     let items: Vec<ListItem> = game
         .iter_characters()
         .enumerate()
-        .map(|(i, (chara, data))| build_item(chara, data, expanded.contains(&i)))
+        .map(|(i, (address, chara, data))| build_item(address, chara, data, expanded.contains(&i)))
         .collect();
 
     let title = format!("Characters ({})", items.len());

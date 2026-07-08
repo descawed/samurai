@@ -743,7 +743,8 @@ pub struct Game {
     new_game_character_menu: NewGameCharacterMenu,
     pub game_state: GameState,
     pub character_data: [CharacterData; NUM_CHARACTERS],
-    characters: Vec<Character>,
+    /// In-scene characters paired with their addresses in emulator memory.
+    characters: Vec<(u32, Character)>,
     /// Present while free camera mode is active.
     free_cam: Option<FreeCam>,
 }
@@ -890,7 +891,7 @@ impl Game {
                     if character.data < char_data_start || character.data >= char_data_end {
                         break;
                     }
-                    self.characters.push(character);
+                    self.characters.push((entry.object, character));
 
                     // if we encounter the list end pointer, stop even if we haven't found the reported number of characters
                     if entry.next == list_end {
@@ -920,11 +921,12 @@ impl Game {
         self.emulator().read(address, CHARACTER_DATA_SIZE)
     }
 
-    pub fn iter_characters(&self) -> impl Iterator<Item = (&Character, &CharacterData)> {
-        self.characters.iter().map(|chara| {
+    /// Iterate over the in-scene characters as (address in emulator memory, character, character data).
+    pub fn iter_characters(&self) -> impl Iterator<Item = (u32, &Character, &CharacterData)> {
+        self.characters.iter().map(|&(address, ref chara)| {
             // we know the data pointer is in the character data range because we checked it in update()
             let data_index = (chara.data as usize - self.version.character_data_address) / CHARACTER_DATA_SIZE;
-            (chara, &self.character_data[data_index])
+            (address, chara, &self.character_data[data_index])
         })
     }
 
