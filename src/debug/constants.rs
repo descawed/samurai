@@ -39,6 +39,7 @@ impl GameConstant<i32, 3> for Difficulty {
     }
 
     fn display_name(&self) -> &str {
+        // FIXME: on the original release (SLPS-20178), 0 = Normal and 1 = Easy
         match self.0 {
             0 => "Easy",
             1 => "Normal",
@@ -143,6 +144,10 @@ impl GameConstant<i8, 15> for Map {
             5 => "MAPID_TETUDO",
             6 => "MAPID_YAKATA",
             7 => "MAPID_KOURO",
+            // the missing values here represent afternoon and evening variants of the maps above.
+            // map index = map ID + map time ID * 8
+            // they're not listed here because the actual value of the map_id field in the GameState
+            // is always the canonical map ID regardless of time of day
             24 => "MAPID_EVENTSHUKUBA",
             25 => "MAPID_BATTLE1",
             26 => "MAPID_BATTLE2",
