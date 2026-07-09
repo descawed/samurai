@@ -284,6 +284,94 @@ impl From<u32> for AiStatus {
 #[binrw]
 #[derive(Debug, Clone, Copy, Ord, PartialOrd, Eq, PartialEq, Hash, Zeroable)]
 #[repr(transparent)]
+pub struct Command(u32);
+
+impl GameConstant<u32, 65> for Command {
+    fn value(&self) -> u32 {
+        self.0
+    }
+
+    fn constant_name(&self) -> Option<&'static str> {
+        Some(match self.0 {
+            0 => "COMMAND_NONE",
+            1 => "COMMAND_MOVE",
+            2 => "COMMAND_MOVEW",
+            3 => "COMMAND_TRANS",
+            4 => "COMMAND_TURN",
+            5 => "COMMAND_FACETO",
+            6 => "COMMAND_MOTION",
+            7 => "COMMAND_STOPLOOP",
+            8 => "COMMAND_STOP",
+            9 => "COMMAND_STAND",
+            10 => "COMMAND_RUN",
+            11 => "COMMAND_WALK",
+            12 => "COMMAND_ATTACK",
+            13 => "COMMAND_KICK",
+            14 => "COMMAND_JUMP",
+            15 => "COMMAND_LAND",
+            16 => "COMMAND_DAMAGE",
+            17 => "COMMAND_WEAPON_ON",
+            18 => "COMMAND_WEAPON_OFF",
+            19 => "COMMAND_GUARD",
+            20 => "COMMAND_GUARDHIT",
+            21 => "COMMAND_SLIDE",
+            22 => "COMMAND_SET_GUARDCOM",
+            23 => "COMMAND_PUSH",
+            24 => "COMMAND_PULL",
+            25 => "COMMAND_GUARD_ATTACK",
+            26 => "COMMAND_GUARD_NONE",
+            27 => "COMMAND_LEAN_FORWARD",
+            28 => "COMMAND_LEAN_BACK",
+            29 => "COMMAND_TUMBLE",
+            30 => "COMMAND_GUARD_RESULT",
+            31 => "COMMAND_TALK",
+            32 => "COMMAND_EVENTMOTION",
+            33 => "COMMAND_FALL",
+            34 => "COMMAND_DOWN",
+            35 => "COMMAND_BLOW",
+            36 => "COMMAND_PICKUP",
+            37 => "COMMAND_TAKE",
+            38 => "COMMAND_THROW",
+            39 => "COMMAND_SWING",
+            40 => "COMMAND_EAT",
+            41 => "COMMAND_OPEN",
+            42 => "COMMAND_ATTACK_KEEP",
+            43 => "COMMAND_UP",
+            44 => "COMMAND_TUMBLE_STOP",
+            45 => "COMMAND_TUMBLE_WALK",
+            46 => "COMMAND_LADDER",
+            47 => "COMMAND_DANGER",
+            48 => "COMMAND_CANCEL",
+            49 => "COMMAND_BACK",
+            50 => "COMMAND_SUMAKI_STOP",
+            51 => "COMMAND_SUMAKI_WRITHE",
+            52 => "COMMAND_SUMAKI_JUMP",
+            53 => "COMMAND_CARRY_START",
+            54 => "COMMAND_CARRY_STOP",
+            55 => "COMMAND_CARRY_WALK",
+            56 => "COMMAND_CARRY_END",
+            57 => "COMMAND_CARRIED_START",
+            58 => "COMMAND_CARRIED_STOP",
+            59 => "COMMAND_CARRIED_STRUGGLE",
+            60 => "COMMAND_CARRIED_END",
+            61 => "COMMAND_STAGGER",
+            62 => "COMMAND_BLOCKING",
+            63 => "COMMAND_BLOCK",
+            64 => "COMMAND_COMPULSORY_STAND",
+            _ => return None,
+        })
+    }
+}
+
+impl From<u32> for Command {
+    fn from(value: u32) -> Self {
+        Self(value)
+    }
+}
+
+#[binrw]
+#[derive(Debug, Clone, Copy, Ord, PartialOrd, Eq, PartialEq, Hash, Zeroable)]
+#[repr(transparent)]
 pub struct CharacterId(i32);
 
 impl CharacterId {
@@ -537,6 +625,7 @@ impl GameConstant<i32, 363> for Animation {
         // high bits are used for flags
         let action_id = self.0 & 0xfff;
         Some(match action_id {
+            // FIXME: these vary by version
             0 => "MTAS_BASIC",
             1 => "MTAS_STOP",
             2 => "MTAS_E_STOP",

@@ -529,8 +529,8 @@ pub struct Character {
     unk3cc: u32, // 3cc
     pub base_max_health: i32, // 3d0
     unk3d4: [u8; 0x13c], // 3d4
-    pub current_func_id: u32, // 510
-    pub last_func_id: u32, // 514
+    pub current_command_id: Command, // 510
+    pub last_command_id: Command, // 514
     unk518: [u8; 0x20], // 518
     pub base_health: i16, // 538
     unk53a: [u8; 10], // 53a

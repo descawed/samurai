@@ -132,8 +132,12 @@ fn detail_lines(address: u32, chara: &Character, data: &CharacterData) -> Vec<Li
             labeled_constant_hex(chara.animation_id.value(), chara.animation_id.constant_name()),
         ),
         detail(
-            "Func",
-            format!("cur {} last {}", chara.current_func_id, chara.last_func_id),
+            "Command",
+            format!(
+                "cur {} last {}",
+                labeled_constant(chara.current_command_id.value(), chara.current_command_id.constant_name()),
+                labeled_constant(chara.last_command_id.value(), chara.last_command_id.constant_name()),
+            ),
         ),
         detail(
             "Watch",
