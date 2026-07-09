@@ -582,7 +582,8 @@ pub struct Character {
     say_dead_flag: i8, // bd5 / cd5
     unkbd6: [u8; 0x1e], // bd6 / cd6
     pub ai_mode: AiStatus, // bf4 / cf4
-    unkbf8: [u8; 0xa0], // bf8 / cf8
+    pub ai_command: Command, // bf8 / cf8
+    unkbfc: [u8; 0x9c], // bfc / cfc
     pub special_state: i32, // 1 = death blow, 2 = waiting; c98 / ca8
     unkc9c: [u8; 0x34], // c9c / cac
 }

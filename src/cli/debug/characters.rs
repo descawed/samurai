@@ -134,9 +134,10 @@ fn detail_lines(address: u32, chara: &Character, data: &CharacterData) -> Vec<Li
         detail(
             "Command",
             format!(
-                "cur {} last {}",
+                "cur {} last {} AI {}",
                 labeled_constant(chara.current_command_id.value(), chara.current_command_id.constant_name()),
                 labeled_constant(chara.last_command_id.value(), chara.last_command_id.constant_name()),
+                labeled_constant(chara.ai_command.value(), chara.ai_command.constant_name()),
             ),
         ),
         detail(
