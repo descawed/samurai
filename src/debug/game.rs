@@ -16,6 +16,9 @@ const CHARACTER_DATA_SIZE: usize = 0x200;
 /// Size of a `Character` in the original release. Later versions insert an extra 0x100-byte block
 /// (`unk860`) before `timeouts`, so a larger `character_size` indicates that block is present.
 const CHARACTER_BASE_SIZE: usize = 0xcd0;
+/// Offset of the `data` pointer (to the character's [`CharacterData`]) within a [`Character`].
+/// The same in all versions, as the version-specific `unk860` block comes later in the struct.
+const CHARACTER_DATA_POINTER_OFFSET: usize = 0x388;
 const ENGINE_BASE_SIZE: usize = 0x44;
 /// Offset of the `character_list` field within the engine for versions that embed the
 /// [`LinkedListHead`] directly instead of storing a pointer to it. This is the same location the
@@ -649,6 +652,7 @@ pub struct GameVersion {
     game_state_address: usize,
     character_data_address: usize,
     engine_address: usize,
+    camera_target_character_address: usize,
     free_cam_patch_address: usize,
     /// Offset within the engine of the pointer to the [`Camera`].
     camera_pointer_offset: usize,
@@ -713,6 +717,7 @@ const GAME_VERSIONS: [GameVersion; 2] = [
         game_state_address: 0x008c6f00,
         character_data_address: 0x00bf13e0,
         engine_address: 0x008b5c00,
+        camera_target_character_address: 0x00225170,
         free_cam_patch_address: 0x0011d370,
         camera_pointer_offset: 0x3c,
         character_size: 0xcd0,
@@ -725,6 +730,7 @@ const GAME_VERSIONS: [GameVersion; 2] = [
         game_state_address: 0x008ecd00,
         character_data_address: 0x00c175b0,
         engine_address: 0x008dba00,
+        camera_target_character_address: 0x0022aef0,
         free_cam_patch_address: 0x0011d120,
         camera_pointer_offset: 0x38,
         character_size: 0xdd0,
@@ -920,6 +926,29 @@ impl Game {
     pub fn read_character_data(&self, id: usize) -> Result<CharacterData> {
         let address = self.version.character_data_address + id * CHARACTER_DATA_SIZE;
         self.emulator().read(address, CHARACTER_DATA_SIZE)
+    }
+
+    /// Read the character ID (`CHID_` index) of the character the camera is currently targeting.
+    /// Returns `None` if the camera target pointer doesn't currently point to a valid character.
+    /// Like [`read_character_data`](Self::read_character_data), this reads directly from emulator
+    /// memory on demand, so it works even when character data is skipped on update.
+    pub fn camera_target_character_id(&self) -> Result<Option<usize>> {
+        let emulator = self.emulator();
+        let target =
+            emulator.read::<u32>(self.version.camera_target_character_address, 4)? as usize;
+        if !Emulator::is_address_valid(target, CHARACTER_DATA_POINTER_OFFSET + 4) {
+            return Ok(None);
+        }
+
+        // identify the character by which CharacterData record its data pointer refers to
+        let data = emulator.read::<u32>(target + CHARACTER_DATA_POINTER_OFFSET, 4)? as usize;
+        let offset = match data.checked_sub(self.version.character_data_address) {
+            Some(offset) if offset % CHARACTER_DATA_SIZE == 0 => offset,
+            _ => return Ok(None),
+        };
+
+        let index = offset / CHARACTER_DATA_SIZE;
+        Ok((index < NUM_CHARACTERS).then_some(index))
     }
 
     /// Iterate over the in-scene characters as (address in emulator memory, character, character data).

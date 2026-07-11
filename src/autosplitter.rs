@@ -29,8 +29,14 @@ const NEW_GAME_VARIABLE_NAME: &str = "SamuraiNewGame";
 /// frequency this is roughly five seconds.
 const CATEGORY_SYNC_PERIOD: i32 = 334;
 
+/// Character ID of the player
+const CHID_SHUJINKO: usize = 0;
+
 /// Character ID of the final boss
 const CHID_TAMAGAWA: usize = 16;
+
+/// How much the player's samurai value drops upon joining Tamagawa in ending 6.
+const JOIN_TAMAGAWA_SAMURAI_VALUE_COST: i32 = 100;
 
 /// How many frames to wait after the final boss's health reaches 0 before splitting to end the run.
 ///
@@ -42,7 +48,10 @@ const CHID_TAMAGAWA: usize = 16;
 /// unsuccessful - there's a 2-frame delay between Tamagawa being set as the camera target and the
 /// camera actually switching to him, and I wasn't able to find what triggers the switch.
 /// Ultimately, checking his health with a delay seemed like the most straightforward approach.
-const BOSS_DEATH_SPLIT_DELAY_FRAMES: u32 = 4;
+///
+/// The same is true for ending 6 - it takes the same delay after Tamagawa is set as the camera
+/// target before the camera actually cuts to him.
+const ENDING_SPLIT_DELAY_FRAMES: u32 = 4;
 
 /// A simple down-counter used to throttle periodic work (re-reading the category from LiveSplit)
 /// rather than doing it on every poll.
@@ -165,9 +174,15 @@ pub struct SamuraiGame {
     route: Option<&'static Route>,
     /// The last `(phase ID, event ID)` we observed, used to detect event transitions.
     last_event: Option<(i8, i32)>,
-    /// The engine frame counter when the final boss's health first reached 0, used to delay the
-    /// run-ending split. `None` until the boss is defeated (or after a reset).
-    boss_defeated_frame: Option<u32>,
+    /// The engine frame counter when the run-ending trigger was first observed — the final boss's
+    /// health reaching 0, or for ending 6 the camera being set to target him — used to delay the
+    /// run-ending split. `None` until the trigger fires (or after a reset).
+    ending_frame: Option<u32>,
+    /// The player's samurai value from the previous poll of an ending 6 run's final stretch, used
+    /// to detect the drop that marks the player joining Tamagawa.
+    last_samurai_value: Option<i16>,
+    /// Whether the ending 6 samurai value drop has been observed.
+    samurai_value_dropped: bool,
     /// Throttles re-reading the category variables from LiveSplit.
     category_sync: PeriodicCheck,
 }
@@ -182,9 +197,18 @@ impl SamuraiGame {
             category: None,
             route: None,
             last_event: None,
-            boss_defeated_frame: None,
+            ending_frame: None,
+            last_samurai_value: None,
+            samurai_value_dropped: false,
             category_sync: PeriodicCheck::new(CATEGORY_SYNC_PERIOD),
         }
+    }
+
+    /// Forget any partial run-end detection (used when the timer isn't running or was reset).
+    const fn reset_ending_progress(&mut self) {
+        self.ending_frame = None;
+        self.last_samurai_value = None;
+        self.samurai_value_dropped = false;
     }
 
     /// Re-read the category from the command-line overrides and/or LiveSplit, updating the selected
@@ -233,7 +257,7 @@ impl SamuraiGame {
     }
 
     /// Watch the final boss's health and split to end the run once he's been dead for
-    /// [`BOSS_DEATH_SPLIT_DELAY_FRAMES`] frames. Called each poll while the run is in its final
+    /// [`ENDING_SPLIT_DELAY_FRAMES`] frames. Called each poll while the run is in its final
     /// stretch. A failed read is treated as "not defeated yet"; if the game has really gone away, the
     /// next [`update`](Debugger::update) will catch it.
     fn check_boss_defeated(&mut self, live_split: &mut LiveSplit, frame_counter: u32) -> Result<()> {
@@ -248,23 +272,85 @@ impl SamuraiGame {
 
         if boss.health > 0 {
             // boss still alive; reset any pending kill so we require a fresh death
-            self.boss_defeated_frame = None;
+            self.ending_frame = None;
             return Ok(());
         }
 
-        let defeated_frame = match self.boss_defeated_frame {
+        let defeated_frame = match self.ending_frame {
             Some(frame) => frame,
             None => {
                 log::debug!(
                     "Final boss defeated at frame {frame_counter}; ending run in \
-                     {BOSS_DEATH_SPLIT_DELAY_FRAMES} frames"
+                     {ENDING_SPLIT_DELAY_FRAMES} frames"
                 );
-                self.boss_defeated_frame = Some(frame_counter);
+                self.ending_frame = Some(frame_counter);
                 frame_counter
             }
         };
 
-        if frame_counter.wrapping_sub(defeated_frame) >= BOSS_DEATH_SPLIT_DELAY_FRAMES {
+        if frame_counter.wrapping_sub(defeated_frame) >= ENDING_SPLIT_DELAY_FRAMES {
+            log::info!("Run complete!");
+            live_split.split()?;
+        }
+
+        Ok(())
+    }
+
+    /// Watch for the run-ending sequence of ending 6, in which the player joins the final boss
+    /// rather than defeating him: the player's samurai value drops by exactly
+    /// [`JOIN_TAMAGAWA_SAMURAI_VALUE_COST`], then the camera is set to target Tamagawa, and the
+    /// run ends [`ENDING_SPLIT_DELAY_FRAMES`] frames after that. Called each poll while an ending
+    /// 6 run is in its final stretch. As in [`check_boss_defeated`](Self::check_boss_defeated), a
+    /// failed read is treated as "hasn't happened yet".
+    fn check_boss_joined(&mut self, live_split: &mut LiveSplit, frame_counter: u32) -> Result<()> {
+        if !self.samurai_value_dropped {
+            let player = match self.debugger.read_character_data(CHID_SHUJINKO) {
+                Ok(Some(player)) => player,
+                Ok(None) => return Ok(()),
+                Err(e) => {
+                    log::debug!("Failed to read player data: {e}");
+                    return Ok(());
+                }
+            };
+
+            let dropped = self.last_samurai_value.is_some_and(|last| {
+                i32::from(last) - i32::from(player.samurai_value)
+                    == JOIN_TAMAGAWA_SAMURAI_VALUE_COST
+            });
+            self.last_samurai_value = Some(player.samurai_value);
+            if !dropped {
+                return Ok(());
+            }
+
+            log::debug!(
+                "Player's samurai value dropped by {JOIN_TAMAGAWA_SAMURAI_VALUE_COST} at frame \
+                 {frame_counter}; waiting for the camera to target Tamagawa"
+            );
+            self.samurai_value_dropped = true;
+        }
+
+        let target_frame = match self.ending_frame {
+            Some(frame) => frame,
+            None => {
+                match self.debugger.camera_target_character_id() {
+                    Ok(Some(CHID_TAMAGAWA)) => (),
+                    Ok(_) => return Ok(()),
+                    Err(e) => {
+                        log::debug!("Failed to read camera target: {e}");
+                        return Ok(());
+                    }
+                }
+
+                log::debug!(
+                    "Camera targeted Tamagawa at frame {frame_counter}; ending run in \
+                     {ENDING_SPLIT_DELAY_FRAMES} frames"
+                );
+                self.ending_frame = Some(frame_counter);
+                frame_counter
+            }
+        };
+
+        if frame_counter.wrapping_sub(target_frame) >= ENDING_SPLIT_DELAY_FRAMES {
             log::info!("Run complete!");
             live_split.split()?;
         }
@@ -317,24 +403,26 @@ impl LssGame for SamuraiGame {
         };
 
         let current = (game.game_state.phase_id, game.game_state.event_id);
-        // capture the values the boss-detection logic needs so we can stop borrowing `game` (which
-        // borrows the debugger) before taking `&mut self` in check_boss_defeated
+        // capture the values the match arms need so we can stop borrowing `game` (which borrows
+        // the debugger) before taking `&mut self` for the run-end checks and resets
         let engine_mode = game.engine.mode();
         let frame_counter = game.engine.frame_counter;
+        let new_game_start = is_new_game_start(game);
+        let valid_run_mode = is_valid_run_mode(game);
 
         match live_split.get_timer_phase()? {
             TimerPhase::NotRunning => {
-                self.boss_defeated_frame = None;
-                if is_new_game_start(game) {
+                self.reset_ending_progress();
+                if new_game_start {
                     log::info!("New game started; starting timer");
                     live_split.split()?;
                 }
             }
             TimerPhase::Running | TimerPhase::Paused => {
-                if !is_valid_run_mode(game) {
+                if !valid_run_mode {
                     log::info!("Left a valid run state ({engine_mode:?}); resetting");
                     live_split.reset()?;
-                    self.boss_defeated_frame = None;
+                    self.reset_ending_progress();
                 } else {
                     if Some(current) != self.last_event {
                         // we only act on the transition into a new (phase, event)
@@ -356,17 +444,22 @@ impl LssGame for SamuraiGame {
                         }
                     }
 
-                    // once we reach the final stretch of the run, watch the boss's health so we can
-                    // split when he's defeated. that's the last route event, or phase 5 if we have
-                    // no route to tell us which event the boss fight is.
+                    // once we reach the final stretch of the run, watch the boss so we can split
+                    // when the run-ending trigger fires. that's the last route event, or phase 5
+                    // if we have no route to tell us which event the boss fight is.
                     let at_final_boss = engine_mode == EngineMode::InGame
                         && match self.route {
                             Some(route) => route.events().last() == Some(&current),
                             None => current.0 == 5,
                         };
                     if at_final_boss {
-                        // TODO: implement logic for ending 6
-                        self.check_boss_defeated(live_split, frame_counter)?;
+                        // in ending 6 the player joins the boss instead of defeating him, so the
+                        // end of the run is detected differently
+                        if self.category.is_some_and(|cat| cat.ending == 6) {
+                            self.check_boss_joined(live_split, frame_counter)?;
+                        } else {
+                            self.check_boss_defeated(live_split, frame_counter)?;
+                        }
                     }
                 }
             }

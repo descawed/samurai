@@ -152,4 +152,14 @@ impl Debugger {
             _ => Ok(None),
         }
     }
+
+    /// Read the character ID (`CHID_` index) of the character the camera is currently targeting.
+    /// Returns `None` if no game is running or the camera isn't targeting a valid character; see
+    /// [`Game::camera_target_character_id`].
+    pub fn camera_target_character_id(&self) -> Result<Option<usize>> {
+        match &self.state {
+            State::GameRunning(game) => game.camera_target_character_id(),
+            _ => Ok(None),
+        }
+    }
 }
