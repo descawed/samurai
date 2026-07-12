@@ -10,9 +10,9 @@ repository = "https://github.com/descawed/samurai"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-anyhow = "~1.0.102"
+anyhow = "~1.0.103"
 binrw = "~0.15.1"
-bytemuck = { version = "1.25.0", features = ["derive", "min_const_generics"] }
+bytemuck = { version = "1.25.1", features = ["derive", "min_const_generics"] }
 chardet = "~0.2.4"
 chumsky = "0.13.0"
 clap = "4.6.1"
@@ -22,19 +22,19 @@ crossterm = "0.29.0"
 dirs = "6"
 encoding_rs = "~0.8.35"
 image = "~0.25.10"
-itertools = "~0.14.0"
+itertools = "~0.15.0"
 log = "~0.4"
 lss-autosplitter = { git = "https://github.com/descawed/lss-autosplitter.git", branch = "main" }
 num-traits = "0.2.19"
 object = "0.39.1"
 ordered_hash_map = "~0.6.0"
 pathdiff = "~0.2.3"
-quick-xml = { version = "0.40.1", features = ["serde", "serialize"] }
-ratatui = "0.30.0"
+quick-xml = { version = "0.41.0", features = ["serde", "serialize"] }
+ratatui = "0.30.2"
 serde = { version = "1.0", features = ["derive"] }
 walkdir = "~2.5.0"
 strum = { version = "~0.28.0", features = ["derive"] }
-sysinfo = "0.39.3"
+sysinfo = "0.39.6"
 thiserror = "2.0.18"
 toml = "1.1"
 
