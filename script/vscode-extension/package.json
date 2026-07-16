@@ -19,7 +19,8 @@
           "samurai-script"
         ],
         "extensions": [
-          ".sol"
+          ".sol",
+          ".lst"
         ],
         "configuration": "./language-configuration.json"
       }
