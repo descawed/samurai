@@ -145,6 +145,7 @@ formatting. This is intended for the PSP version, whose scripts have not been pr
   };
   ```
   Like the `/return` keyword, only the `/b` portion of the keyword is significant.
+- Delete a variable with `/delete #var;`. Like `/return` and `/break`, only the `/d` prefix is significant.
 - The language supports a `?I` keyword for ternary conditional expressions: `?I #condition, #true_value, #false_value`.
   No scripts have been observed to use this syntax, but the built-in `not` function is internally defined as a macro
   which expands to `?I (#condition), 0, 1`.
