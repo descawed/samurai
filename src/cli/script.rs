@@ -1,7 +1,7 @@
 use std::borrow::Cow;
 use std::fs;
 use std::io::Write;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use encoding_rs::{SHIFT_JIS, WINDOWS_1252};
 use strum::EnumString;
@@ -87,6 +87,11 @@ pub fn unformat_script(
 ) -> anyhow::Result<()> {
     let mut formatter = ScriptFormatter::new();
     formatter.set_obfuscate(obfuscate);
+    let include_dir = match script_path.parent() {
+        Some(dir) if !dir.as_os_str().is_empty() => dir.to_path_buf(),
+        _ => PathBuf::from("."),
+    };
+    formatter.set_include_dir(Some(include_dir));
     if let Some(path) = config_path {
         let config_text = fs::read_to_string(path)?;
         formatter.use_config(&config_text)?;

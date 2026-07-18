@@ -1,6 +1,8 @@
 use std::collections::HashMap;
+use std::fs;
+use std::path::{Path, PathBuf};
 
-use anyhow::Result;
+use anyhow::{Context, Result, anyhow, bail};
 
 mod analysis;
 mod parse;
@@ -153,6 +155,7 @@ pub struct ScriptFormatter {
     made_changes: bool,
     quiet: bool,
     obfuscate: bool,
+    include_dir: Option<PathBuf>,
 }
 
 impl ScriptFormatter {
@@ -162,6 +165,7 @@ impl ScriptFormatter {
             made_changes: false,
             quiet: false,
             obfuscate: false,
+            include_dir: None,
         }
     }
 
@@ -171,6 +175,10 @@ impl ScriptFormatter {
 
     pub fn set_obfuscate(&mut self, obfuscate: bool) {
         self.obfuscate = obfuscate;
+    }
+
+    pub fn set_include_dir(&mut self, include_dir: Option<PathBuf>) {
+        self.include_dir = include_dir;
     }
 
     fn reset(&mut self) {
@@ -460,12 +468,139 @@ impl ScriptFormatter {
         }
     }
 
+    /// If the statement is an include directive (`$Include "filename";`), get the included filename
+    fn include_filename(stmt: &Statement) -> Option<&str> {
+        let Statement::Expression(expr) = stmt else {
+            return None;
+        };
+
+        let (Expression::FunctionCall(name, args), _) = expr.unwrap_global() else {
+            return None;
+        };
+
+        if name != "Include" {
+            return None;
+        }
+
+        match args.as_slice() {
+            [Expression::String(filename)] => Some(filename),
+            _ => None,
+        }
+    }
+
+    /// Search `dir` for a file whose name matches `filename` case-insensitively
+    fn resolve_include(dir: &Path, filename: &str) -> Result<PathBuf> {
+        // fast path: the name matches exactly
+        let exact = dir.join(filename);
+        if exact.is_file() {
+            return Ok(exact);
+        }
+
+        for entry in
+            fs::read_dir(dir).with_context(|| format!("Failed to list {}", dir.display()))?
+        {
+            let entry = entry?;
+            if entry
+                .file_name()
+                .to_string_lossy()
+                .eq_ignore_ascii_case(filename)
+                && entry.path().is_file()
+            {
+                return Ok(entry.path());
+            }
+        }
+
+        Err(anyhow!(
+            "Include file {:?} not found in {}",
+            filename,
+            dir.display()
+        ))
+    }
+
+    /// Inline includes in any function definitions contained in an expression
+    fn inline_includes_in_expression(
+        expr: &mut Expression,
+        dir: &Path,
+        stack: &mut Vec<String>,
+    ) -> Result<()> {
+        for (_, inner_block) in expr.inner_blocks_mut() {
+            Self::inline_includes(inner_block, dir, stack)?;
+        }
+        Ok(())
+    }
+
+    /// Replace include directives with the parsed contents of the included files
+    ///
+    /// `stack` tracks the chain of files currently being included so circular includes can be
+    /// detected.
+    fn inline_includes(block: &mut Block, dir: &Path, stack: &mut Vec<String>) -> Result<()> {
+        let mut i = 0;
+        while i < block.len() {
+            let Some(filename) = Self::include_filename(&block[i]) else {
+                match &mut block[i] {
+                    Statement::ObjectInitialization(expr, init_block) => {
+                        Self::inline_includes_in_expression(expr, dir, stack)?;
+                        Self::inline_includes(init_block, dir, stack)?;
+                    }
+                    Statement::WhileLoop(expr, loop_block) => {
+                        Self::inline_includes_in_expression(expr, dir, stack)?;
+                        Self::inline_includes(loop_block, dir, stack)?;
+                    }
+                    Statement::Conditional(conditional, else_block) => {
+                        let mut condition = Some(conditional);
+                        while let Some(Conditional(expr, condition_block, next_condition)) =
+                            condition
+                        {
+                            Self::inline_includes_in_expression(expr, dir, stack)?;
+                            Self::inline_includes(condition_block, dir, stack)?;
+                            condition = next_condition.as_deref_mut();
+                        }
+                        if let Some(else_block) = else_block {
+                            Self::inline_includes(else_block, dir, stack)?;
+                        }
+                    }
+                    Statement::Expression(expr) => {
+                        Self::inline_includes_in_expression(expr, dir, stack)?;
+                    }
+                    _ => (),
+                }
+                i += 1;
+                continue;
+            };
+
+            let key = filename.to_lowercase();
+            if stack.contains(&key) {
+                bail!("Circular include of {:?}", filename);
+            }
+
+            let path = Self::resolve_include(dir, filename)?;
+            let text = fs::read_to_string(&path)
+                .with_context(|| format!("Failed to read include file {}", path.display()))?;
+            let mut included = parse::parse(text)
+                .with_context(|| format!("Failed to parse include file {}", path.display()))?;
+
+            stack.push(key);
+            Self::inline_includes(&mut included, dir, stack)?;
+            stack.pop();
+
+            let num_statements = included.len();
+            block.splice(i..=i, included);
+            // the included statements have already been fully processed, so skip over them
+            i += num_statements;
+        }
+
+        Ok(())
+    }
+
     pub fn unformat_script<T: AsRef<str>>(&self, script: T) -> Result<String> {
-        if self.config.is_none() && !self.obfuscate {
+        if self.config.is_none() && !self.obfuscate && self.include_dir.is_none() {
             return Ok(unformat_script(script.as_ref()));
         }
 
         let mut block = parse::parse(script)?;
+        if let Some(dir) = &self.include_dir {
+            Self::inline_includes(&mut block, dir, &mut Vec::new())?;
+        }
         let constants: HashMap<&str, i32> = self
             .config
             .iter()
@@ -481,5 +616,66 @@ impl ScriptFormatter {
 impl Default for ScriptFormatter {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_dir(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("samurai_{}_{}", name, std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn test_inline_includes() {
+        let dir = test_dir("inline_includes");
+        // the include search should be case-insensitive
+        fs::write(dir.join("COMMON.H"), "#a | 1;\n$Include \"Nested.h\";").unwrap();
+        fs::write(dir.join("nested.h"), "#b : 2;").unwrap();
+
+        let mut formatter = ScriptFormatter::new();
+        formatter.set_include_dir(Some(dir.clone()));
+        let result = formatter.unformat_script("$Include \"common.h\";\n$Answer 42;");
+
+        fs::remove_dir_all(&dir).unwrap();
+
+        let result = result.unwrap();
+        assert!(!result.contains("Include"));
+        let a = result.find("#a | 1;").unwrap();
+        let b = result.find("#b : 2;").unwrap();
+        let answer = result.find("$Answer 42;").unwrap();
+        assert!(a < b && b < answer);
+    }
+
+    #[test]
+    fn test_circular_include() {
+        let dir = test_dir("circular_include");
+        fs::write(dir.join("a.h"), "$Include \"b.h\";").unwrap();
+        fs::write(dir.join("b.h"), "$Include \"A.H\";").unwrap();
+
+        let mut formatter = ScriptFormatter::new();
+        formatter.set_include_dir(Some(dir.clone()));
+        let result = formatter.unformat_script("$Include \"a.h\";");
+
+        fs::remove_dir_all(&dir).unwrap();
+
+        let error = result.unwrap_err().to_string();
+        assert!(error.contains("Circular include"));
+    }
+
+    #[test]
+    fn test_missing_include() {
+        let dir = test_dir("missing_include");
+
+        let mut formatter = ScriptFormatter::new();
+        formatter.set_include_dir(Some(dir.clone()));
+        let result = formatter.unformat_script("$Include \"nope.h\";");
+
+        fs::remove_dir_all(&dir).unwrap();
+
+        assert!(result.unwrap_err().to_string().contains("not found"));
     }
 }
