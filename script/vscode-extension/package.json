@@ -1,14 +1,19 @@
 {
   "name": "samurai-script",
   "displayName": "Way of the Samurai Script",
-  "description": "Syntax highlighting for Way of the Samurai (2002) .sol script files",
+  "description": "Language support for Way of the Samurai (2002) .sol script files",
   "version": "0.1.0",
   "publisher": "descawed",
+  "main": "./extension.js",
   "engines": {
     "vscode": "^1.74.0"
   },
   "categories": [
-    "Programming Languages"
+    "Programming Languages",
+    "Snippets"
+  ],
+  "activationEvents": [
+    "onLanguage:samurai-script"
   ],
   "contributes": {
     "languages": [

@@ -79,6 +79,10 @@
           "match": "\\?i\\b"
         },
         {
+          "name": "keyword.control.loop.while.samurai-script",
+          "match": "\\?W\\b"
+        },
+        {
           "name": "storage.type.function.samurai-script",
           "match": "\\?F\\b"
         }
