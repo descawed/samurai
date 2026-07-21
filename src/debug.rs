@@ -112,6 +112,15 @@ impl Debugger {
         }
     }
 
+    /// The name of the emulator we're currently attached to, if any.
+    pub fn emulator_name(&self) -> Option<&'static str> {
+        match &self.state {
+            State::WaitingForEmulator => None,
+            State::WaitingForGame(emulator) => Some(emulator.name()),
+            State::GameRunning(game) => Some(game.emulator_name()),
+        }
+    }
+
     fn is_pid_alive(&self, pid: Pid) -> bool {
         // if we fail to mutably borrow the platform, we just ignore it; it's not the end of the
         // world if the data's a little stale

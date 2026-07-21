@@ -306,12 +306,13 @@ impl DebuggerApp {
             draw_running(frame, area, game, &mut self.ui, self.event_is_new);
         } else if self.debugger.is_emulator_running() {
             let message = format!(
-                "Found PCSX2, PID: {}. Waiting for Way of the Samurai...",
+                "Found {}, PID: {}. Waiting for Way of the Samurai...",
+                self.debugger.emulator_name().unwrap_or("emulator"),
                 self.debugger.pid().unwrap()
             );
             frame.render_widget(Paragraph::new(message), area);
         } else {
-            frame.render_widget(Paragraph::new("Waiting for PCSX2..."), area);
+            frame.render_widget(Paragraph::new("Waiting for PCSX2 or PPSSPP..."), area);
         }
     }
 }

@@ -213,11 +213,11 @@ fn cli() -> Command {
         )
         .subcommand(
             Command::new("debug")
-                .about("Debug the game running in PCSX2")
+                .about("Debug the game running in PCSX2 or PPSSPP")
         )
         .subcommand(
             Command::new("autosplitter")
-                .about("Run a LiveSplit autosplitter for the game running in PCSX2")
+                .about("Run a LiveSplit autosplitter for the game running in PCSX2 or PPSSPP")
                 .arg(
                     arg!(-l --"live-split-port" <PORT> "Port that the LiveSplit server is running on")
                         .value_parser(clap::value_parser!(u16))

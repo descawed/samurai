@@ -4,10 +4,10 @@ use sysinfo::Pid;
 
 use super::{DebugError, Result};
 use super::constants::*;
-use super::emulator::Emulator;
+use super::emulator::{Console, Emulator};
 
 const FINGERPRINT_STRING: &[u8] = b"CreateFormatString: arg is not string.";
-const GAME_STATE_SIZE: usize = 0x568;
+const GAME_STATE_BASE_SIZE: usize = 0x568;
 /// Number of unique characters in the game
 const NUM_CHARACTERS: usize = 103;
 /// Maximum number of characters that can be in any given event at the same time
@@ -355,9 +355,12 @@ impl Default for NewGameCharacterMenu {
 }
 
 #[binrw]
+#[brw(import(has_extra: bool))]
 #[derive(Debug, Clone, Zeroable)]
 pub struct GameState {
     pub gp: i32,
+    #[br(if(has_extra, [0u8; 0x7c]))]
+    #[bw(if(has_extra))]
     unk004: [u8; 0x7c],
     pub status: i8, // 2 = SetGameStop, 3 = SetGameClear, 4 = ???
     pub map_id: Map,
@@ -648,6 +651,7 @@ impl Default for Character {
 #[derive(Debug, Clone)]
 pub struct GameVersion {
     name: &'static str,
+    console: Console,
     fingerprint_address: usize,
     game_state_address: usize,
     character_data_address: usize,
@@ -658,6 +662,7 @@ pub struct GameVersion {
     camera_pointer_offset: usize,
     character_size: usize,
     engine_size: usize,
+    game_state_size: usize,
     /// Whether the character [`LinkedListHead`] is embedded directly in the engine (at the
     /// `character_list` offset) rather than referenced via a pointer.
     character_list_embedded: bool,
@@ -672,6 +677,14 @@ impl GameVersion {
 
     const fn engine_has_extra(&self) -> bool {
         self.engine_size >= ENGINE_BASE_SIZE
+    }
+
+    const fn game_state_has_extra(&self) -> bool {
+        self.game_state_size >= GAME_STATE_BASE_SIZE
+    }
+
+    const fn supports_free_cam(&self) -> bool {
+        self.camera_target_character_address != 0
     }
 
     const fn main_menu_address(&self) -> usize {
@@ -703,7 +716,7 @@ impl GameVersion {
 
     pub fn search_for_version(emulator: &Emulator) -> Result<Option<&'static Self>> {
         for version in &GAME_VERSIONS {
-            if version.matches(emulator)? {
+            if version.console == emulator.console() && version.matches(emulator)? {
                 return Ok(Some(version));
             }
         }
@@ -711,9 +724,10 @@ impl GameVersion {
     }
 }
 
-const GAME_VERSIONS: [GameVersion; 2] = [
+const GAME_VERSIONS: [GameVersion; 3] = [
     GameVersion {
         name: "SLPS-20178",
+        console: Console::Ps2,
         fingerprint_address: 0x00213260,
         game_state_address: 0x008c6f00,
         character_data_address: 0x00bf13e0,
@@ -721,13 +735,15 @@ const GAME_VERSIONS: [GameVersion; 2] = [
         camera_target_character_address: 0x00225170,
         free_cam_patch_address: 0x0011d370,
         camera_pointer_offset: 0x3c,
-        character_size: 0xcd0,
-        engine_size: 0x44,
+        character_size: CHARACTER_BASE_SIZE,
+        engine_size: ENGINE_BASE_SIZE,
+        game_state_size: GAME_STATE_BASE_SIZE,
         character_list_embedded: true,
         has_hard_difficulty: false,
     },
     GameVersion {
         name: "SLPM-74405",
+        console: Console::Ps2,
         fingerprint_address: 0x00219ed0,
         game_state_address: 0x008ecd00,
         character_data_address: 0x00c175b0,
@@ -737,6 +753,20 @@ const GAME_VERSIONS: [GameVersion; 2] = [
         camera_pointer_offset: 0x38,
         character_size: 0xdd0,
         engine_size: 0x40,
+        game_state_size: GAME_STATE_BASE_SIZE,
+        character_list_embedded: false,
+        has_hard_difficulty: true,
+    },
+    GameVersion {
+        name: "ULJS-00155",
+        console: Console::Psp,
+        fingerprint_address: 0x0894e528,
+        game_state_address: 0x08d54b90,
+        character_data_address: 0x08d7dd10,
+        engine_address: 0x08d43900,
+        camera_target_character_address: 0,
+        camera_pointer_offset: 0,
+        game_state_size: 0x4ec,
         character_list_embedded: false,
         has_hard_difficulty: true,
     },
@@ -788,6 +818,10 @@ impl Game {
 
     pub fn pid(&self) -> Pid {
         self.emulator().pid()
+    }
+
+    pub fn emulator_name(&self) -> &'static str {
+        self.emulator().name()
     }
 
     pub fn version_name(&self) -> &'static str {
@@ -856,7 +890,11 @@ impl Game {
 
         self.game_state = self
             .emulator()
-            .read(self.version.game_state_address, GAME_STATE_SIZE)?;
+            .read_args(
+                self.version.game_state_address,
+                self.version.game_state_size,
+                (self.version.game_state_has_extra(),),
+            )?;
 
         if skip_characters {
             // the autosplitter still needs menu data, but never touches character data
@@ -894,7 +932,7 @@ impl Game {
                 let list_begin = list_head.first as usize;
                 if list_head.count == 0
                     || list_head.count > MAX_EVENT_CHARACTERS
-                    || !Emulator::is_address_valid(list_begin, LINKED_LIST_SIZE)
+                    || !self.emulator().is_address_valid(list_begin, LINKED_LIST_SIZE)
                 {
                     // if something looks fishy, it could mean things aren't initialized properly. we'll just bail.
                     // on the other hand, if the count is 0, we simply don't need to do anything.
@@ -907,7 +945,7 @@ impl Game {
                 let mut entry: LinkedListEntry = self.emulator().read(list_begin, LINKED_LIST_SIZE)?;
                 for _ in 0..list_head.count {
                     let char_address = entry.object as usize;
-                    if !Emulator::is_address_valid(char_address, character_size) {
+                    if !self.emulator().is_address_valid(char_address, character_size) {
                         break;
                     }
 
@@ -926,7 +964,7 @@ impl Game {
                     }
 
                     let next_address = entry.next as usize;
-                    if !Emulator::is_address_valid(next_address, LINKED_LIST_SIZE) {
+                    if !self.emulator().is_address_valid(next_address, LINKED_LIST_SIZE) {
                         break;
                     }
                     entry = self.emulator().read(next_address, LINKED_LIST_SIZE)?;
@@ -956,7 +994,7 @@ impl Game {
         let emulator = self.emulator();
         let target =
             emulator.read::<u32>(self.version.camera_target_character_address, 4)? as usize;
-        if !Emulator::is_address_valid(target, CHARACTER_DATA_POINTER_OFFSET + 4) {
+        if !emulator.is_address_valid(target, CHARACTER_DATA_POINTER_OFFSET + 4) {
             return Ok(None);
         }
 
@@ -1005,9 +1043,11 @@ impl Game {
         if self.free_cam.is_some() {
             self.disable_free_cam()?;
             Ok(false)
-        } else {
+        } else if self.version.supports_free_cam() {
             self.enable_free_cam()?;
             Ok(true)
+        } else {
+            Ok(false)
         }
     }
 
