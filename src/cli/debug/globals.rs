@@ -39,7 +39,7 @@ fn build_lines(game: &Game, event_is_new: bool) -> Vec<Line<'static>> {
         row("Version", game.version_name().to_string()),
         row(
             "Difficulty",
-            format!("{} ({})", state.difficulty.value(), state.difficulty.display_name()),
+            format!("{} ({})", state.difficulty, game.difficulty_name()),
         ),
         row("Phase", state.phase_id.to_string()),
         event_row(state.event_id, event_is_new),

@@ -27,37 +27,6 @@ pub trait GameConstant<I: PrimInt, const N: usize>: From<I> + Copy {
 #[binrw]
 #[derive(Debug, Clone, Copy, Ord, PartialOrd, Eq, PartialEq, Hash, Zeroable)]
 #[repr(transparent)]
-pub struct Difficulty(i32);
-
-impl GameConstant<i32, 3> for Difficulty {
-    fn value(&self) -> i32 {
-        self.0
-    }
-
-    fn constant_name(&self) -> Option<&'static str> {
-        None
-    }
-
-    fn display_name(&self) -> &str {
-        // FIXME: on the original release (SLPS-20178), 0 = Normal and 1 = Easy
-        match self.0 {
-            0 => "Easy",
-            1 => "Normal",
-            2 => "Hard",
-            _ => "Unknown",
-        }
-    }
-}
-
-impl From<i32> for Difficulty {
-    fn from(value: i32) -> Self {
-        Self(value)
-    }
-}
-
-#[binrw]
-#[derive(Debug, Clone, Copy, Ord, PartialOrd, Eq, PartialEq, Hash, Zeroable)]
-#[repr(transparent)]
 pub struct Footing(i8);
 
 impl Footing {

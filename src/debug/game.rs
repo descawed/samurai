@@ -372,7 +372,7 @@ pub struct GameState {
     pub player_money: i16,
     unk12a: i16,
     pub player_num_kills: i32,
-    pub difficulty: Difficulty,
+    pub difficulty: i32,
     pub event_id: i32,
     pub int_vars: [i32; 256],
     pub event_act_end_flags: [i8; 32],
@@ -661,6 +661,7 @@ pub struct GameVersion {
     /// Whether the character [`LinkedListHead`] is embedded directly in the engine (at the
     /// `character_list` offset) rather than referenced via a pointer.
     character_list_embedded: bool,
+    has_hard_difficulty: bool,
 }
 
 impl GameVersion {
@@ -723,6 +724,7 @@ const GAME_VERSIONS: [GameVersion; 2] = [
         character_size: 0xcd0,
         engine_size: 0x44,
         character_list_embedded: true,
+        has_hard_difficulty: false,
     },
     GameVersion {
         name: "SLPM-74405",
@@ -736,6 +738,7 @@ const GAME_VERSIONS: [GameVersion; 2] = [
         character_size: 0xdd0,
         engine_size: 0x40,
         character_list_embedded: false,
+        has_hard_difficulty: true,
     },
 ];
 
@@ -789,6 +792,23 @@ impl Game {
 
     pub fn version_name(&self) -> &'static str {
         self.version.name
+    }
+
+    pub fn difficulty_name(&self) -> &'static str {
+        if self.version.has_hard_difficulty {
+            match self.game_state.difficulty {
+                0 => "Easy",
+                1 => "Normal",
+                2 => "Hard",
+                _ => "Unknown",
+            }
+        } else {
+            match self.game_state.difficulty {
+                0 => "Normal",
+                1 => "Easy",
+                _ => "Unknown",
+            }
+        }
     }
 
     fn read_main_menu(&mut self) -> Result<()> {
