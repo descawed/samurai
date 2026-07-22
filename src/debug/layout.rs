@@ -3,23 +3,13 @@
 //! The structs in [`game`](super::game) are the debugger's logical model: *what* we read. The
 //! tables here describe *where* each field lives in a particular version's memory. The two PS2
 //! versions differ only slightly (kanzenban inserts an extra 0x100-byte block into `Character`
-//! and replaces the engine's embedded character list with a pointer to it), but the PSP release
+//! and shifts the engine's embedded character list head down to 0x3c), but the PSP release
 //! reshuffled everything: fields moved, the 64-bit flag fields narrowed to 32 bits, the menu
 //! pointer block was reordered, and the menu mode numbering changed. Encoding the differences as
 //! data keeps the readers version-agnostic; supporting another layout means writing another table,
 //! not another parser.
 
 use super::game::{MenuMode, SecretPlayerModel};
-
-/// Where a version keeps the in-scene character `LinkedListHead` relative to the engine.
-#[derive(Debug)]
-pub(crate) enum CharacterList {
-    /// The list head is embedded in the engine at this offset. The head's address doubles as the
-    /// end-of-list sentinel.
-    Embedded(usize),
-    /// The engine stores a pointer to the list head at this offset.
-    Pointer(usize),
-}
 
 #[derive(Debug)]
 pub(crate) struct EngineLayout {
@@ -28,7 +18,11 @@ pub(crate) struct EngineLayout {
     pub mode: usize,
     pub frame_counter: usize,
     pub player: usize,
-    pub character_list: CharacterList,
+    /// Offset of the in-scene character `LinkedListHead` embedded in the engine. Every version
+    /// embeds the head (its address doubles as the end-of-list sentinel); only the offset moves.
+    /// The head is read fresh from memory when walking the list, not from the engine snapshot, so
+    /// `size` need not cover it.
+    pub character_list: usize,
     /// Offset from the engine base of the pointer to the live `MainMenu`.
     pub main_menu_pointer: usize,
 }
@@ -276,7 +270,7 @@ pub(crate) static JP: VersionLayout = VersionLayout {
         mode: 0x0,
         frame_counter: 0x24,
         player: 0x28,
-        character_list: CharacterList::Embedded(0x40),
+        character_list: 0x40,
         main_menu_pointer: 0x28980,
     },
     main_menu: MainMenuLayout {
@@ -299,7 +293,7 @@ pub(crate) static KANZENBAN: VersionLayout = VersionLayout {
         mode: 0x0,
         frame_counter: 0x24,
         player: 0x28,
-        character_list: CharacterList::Pointer(0x3c),
+        character_list: 0x3c,
         main_menu_pointer: 0x28980,
     },
     main_menu: MainMenuLayout {
@@ -326,7 +320,7 @@ pub(crate) static PSP: VersionLayout = VersionLayout {
         mode: 0x28,
         frame_counter: 0x5c,
         player: 0x60,
-        character_list: CharacterList::Embedded(0x74),
+        character_list: 0x74,
         main_menu_pointer: 0x28600,
     },
     main_menu: MainMenuLayout {
@@ -433,8 +427,9 @@ mod tests {
     fn secret_model_decoding() {
         assert_eq!(secret_model_ps2(0), SecretPlayerModel::None);
         assert_eq!(secret_model_ps2(1), SecretPlayerModel::Manji);
+        assert_eq!(secret_model_ps2(2), SecretPlayerModel::Teacher);
         assert_eq!(secret_model_psp(0), SecretPlayerModel::None);
-        assert_eq!(secret_model_psp(1), SecretPlayerModel::Manji);
+        assert_eq!(secret_model_psp(1), SecretPlayerModel::Suzu);
         assert_eq!(secret_model_psp(2), SecretPlayerModel::Teacher);
         assert_eq!(secret_model_psp(3), SecretPlayerModel::Robot);
         assert_eq!(secret_model_psp(4), SecretPlayerModel::Unknown(4));

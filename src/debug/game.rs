@@ -8,8 +8,7 @@ use super::{DebugError, Result};
 use super::constants::*;
 use super::emulator::{Console, Emulator};
 use super::layout::{
-    self, CharacterLayout, CharacterList, CharacterMenuLayout, EngineLayout, MainMenuLayout,
-    VersionLayout,
+    self, CharacterLayout, CharacterMenuLayout, EngineLayout, MainMenuLayout, VersionLayout,
 };
 
 const FINGERPRINT_STRING: &[u8] = b"CreateFormatString: arg is not string.";
@@ -76,10 +75,6 @@ pub struct Engine {
     pub frame_counter: u32,
     /// Pointer to the player's `Character`, when one is loaded.
     pub player: u32,
-    // For versions with a `CharacterList::Pointer` layout, the pointer to the character
-    // [`LinkedListHead`]; unused (zero) for versions that embed the list head in the engine. Use
-    // [`GameVersion::character_list_head_address`] to resolve the head's address for either layout.
-    character_list: u32,
 }
 
 impl Engine {
@@ -88,10 +83,6 @@ impl Engine {
             mode: field(buf, layout.mode)?,
             frame_counter: field(buf, layout.frame_counter)?,
             player: field(buf, layout.player)?,
-            character_list: match layout.character_list {
-                CharacterList::Pointer(offset) => field(buf, offset)?,
-                CharacterList::Embedded(_) => 0,
-            },
         })
     }
 
@@ -755,15 +746,10 @@ impl GameVersion {
         self.engine_address + self.camera_pointer_offset
     }
 
-    /// Resolve the address of the character [`LinkedListHead`]. For versions that embed the head
-    /// directly in the engine, this is a fixed offset into the engine; otherwise it's the value of
-    /// the engine's `character_list` pointer. In both cases this address also doubles as the
-    /// sentinel marking the end of the list.
-    fn character_list_head_address(&self, engine: &Engine) -> usize {
-        match self.layout.engine.character_list {
-            CharacterList::Embedded(offset) => self.engine_address + offset,
-            CharacterList::Pointer(_) => engine.character_list as usize,
-        }
+    /// Address of the character [`LinkedListHead`] embedded in the engine. This address also
+    /// doubles as the sentinel marking the end of the list.
+    const fn character_list_head_address(&self) -> usize {
+        self.engine_address + self.layout.engine.character_list
     }
 
     pub fn matches(&self, emulator: &Emulator) -> Result<bool> {
@@ -986,7 +972,7 @@ impl Game {
                 // read it all in one go, so it can change while we're reading it.
                 self.characters.clear();
 
-                let head_address = self.version.character_list_head_address(&self.engine);
+                let head_address = self.version.character_list_head_address();
                 let list_head: LinkedListHead =
                     self.emulator().read(head_address, LINKED_LIST_SIZE)?;
                 let list_begin = list_head.first as usize;
