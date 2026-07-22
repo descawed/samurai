@@ -44,7 +44,7 @@ pub(crate) struct CharacterMenuLayout {
     /// Allocated size of the new-game character menu object.
     pub size: usize,
     pub player_model_index: usize,
-    /// Offset of the secret-model field (`is_manji` on PS2, a model enum on PSP).
+    /// Offset of the secret-model field
     pub secret_model: usize,
     pub decode_secret_model: fn(i32) -> SecretPlayerModel,
 }
