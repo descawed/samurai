@@ -1,10 +1,16 @@
-use binrw::binrw;
+use std::io::Cursor;
+
+use binrw::{BinRead, BinReaderExt, binrw};
 use bytemuck::Zeroable;
 use sysinfo::Pid;
 
 use super::{DebugError, Result};
 use super::constants::*;
 use super::emulator::{Console, Emulator};
+use super::layout::{
+    self, CharacterLayout, CharacterList, CharacterMenuLayout, EngineLayout, MainMenuLayout,
+    VersionLayout,
+};
 
 const FINGERPRINT_STRING: &[u8] = b"CreateFormatString: arg is not string.";
 const GAME_STATE_BASE_SIZE: usize = 0x568;
@@ -13,21 +19,6 @@ const NUM_CHARACTERS: usize = 103;
 /// Maximum number of characters that can be in any given event at the same time
 const MAX_EVENT_CHARACTERS: u32 = 30;
 const CHARACTER_DATA_SIZE: usize = 0x200;
-/// Size of a `Character` in the original release. Later versions insert an extra 0x100-byte block
-/// (`unk860`) before `timeouts`, so a larger `character_size` indicates that block is present.
-const CHARACTER_BASE_SIZE: usize = 0xcd0;
-/// Offset of the `data` pointer (to the character's [`CharacterData`]) within a [`Character`].
-/// The same in all versions, as the version-specific `unk860` block comes later in the struct.
-const CHARACTER_DATA_POINTER_OFFSET: usize = 0x388;
-const ENGINE_BASE_SIZE: usize = 0x44;
-/// Offset of the `character_list` field within the engine for versions that embed the
-/// [`LinkedListHead`] directly instead of storing a pointer to it. This is the same location the
-/// `character_list` pointer would occupy in those versions (after the `unk03c` field).
-const EMBEDDED_CHARACTER_LIST_OFFSET: usize = 0x40;
-/// offset from the engine address to the main menu pointer
-const MAIN_MENU_OFFSET: usize = 0x28980;
-const MAIN_MENU_SIZE: usize = 0x68;
-const NEW_GAME_CHARACTER_MENU_SIZE: usize = 0x74;
 // size of both the list head and a list entry
 const LINKED_LIST_SIZE: usize = 12;
 /// MIPS assembly: jr $ra; nop;
@@ -41,6 +32,28 @@ const CAMERA_TRANSFORM_OFFSET: usize = 0x90;
 /// World up axis. y is the vertical axis; positive is up.
 const WORLD_UP: [f32; 3] = [0.0, 1.0, 0.0];
 
+/// Decode a single field of type `T` from `buf` at `offset`. Field types and offsets are static,
+/// so a failure here means a layout table disagrees with its declared size — surfaced as a parse
+/// error rather than a panic since `buf` ultimately comes from live emulator memory.
+fn field<T>(buf: &[u8], offset: usize) -> Result<T>
+where
+    for<'a> T: BinRead<Args<'a> = ()>,
+{
+    // an out-of-range offset yields an empty slice, which binrw reports as an EOF parse error
+    let mut cursor = Cursor::new(buf.get(offset..).unwrap_or_default());
+    Ok(cursor.read_le()?)
+}
+
+/// Decode a flags field that is a u64 on PS2 (`wide`) but a u32 on PSP. The bit assignments are
+/// version-independent, so the narrow form widens losslessly.
+fn flags_field(buf: &[u8], offset: usize, wide: bool) -> Result<u64> {
+    if wide {
+        field(buf, offset)
+    } else {
+        field::<u32>(buf, offset).map(u64::from)
+    }
+}
+
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub enum EngineMode {
     Booting,
@@ -53,28 +66,35 @@ pub enum EngineMode {
     Unknown(i32),
 }
 
-#[binrw]
-#[brw(import(has_extra: bool))]
+/// The engine's global state object. Only the fields the debugger uses are modeled; see
+/// [`EngineLayout`] for where they live in each version.
 #[derive(Debug, Clone, Zeroable)]
 pub struct Engine {
     mode: i32,
-    unk004: [u8; 0x20],
-    // counts frames since the game started. runs all the time except during boot, movie playback,
-    // and ending slides
+    /// Counts frames since the game started. Runs all the time except during boot, movie playback,
+    /// and ending slides.
     pub frame_counter: u32,
-    player: u32,
-    unk02c: [u8; 0x10],
-    #[br(if(has_extra, 0))]
-    #[bw(if(has_extra))]
-    unk03c: u32,
-    // For most versions this is a pointer to the character [`LinkedListHead`]. Some versions (e.g.
-    // SLPS-20178) instead embed the list head directly at this offset, in which case this field
-    // holds the head's first word (`last`) and should not be treated as a pointer. Use
+    /// Pointer to the player's `Character`, when one is loaded.
+    pub player: u32,
+    // For versions with a `CharacterList::Pointer` layout, the pointer to the character
+    // [`LinkedListHead`]; unused (zero) for versions that embed the list head in the engine. Use
     // [`GameVersion::character_list_head_address`] to resolve the head's address for either layout.
     character_list: u32,
 }
 
 impl Engine {
+    fn read(buf: &[u8], layout: &EngineLayout) -> Result<Self> {
+        Ok(Self {
+            mode: field(buf, layout.mode)?,
+            frame_counter: field(buf, layout.frame_counter)?,
+            player: field(buf, layout.player)?,
+            character_list: match layout.character_list {
+                CharacterList::Pointer(offset) => field(buf, offset)?,
+                CharacterList::Embedded(_) => 0,
+            },
+        })
+    }
+
     pub const fn mode(&self) -> EngineMode {
         match self.mode {
             0 => EngineMode::Booting,
@@ -230,6 +250,10 @@ impl FreeCam {
     }
 }
 
+/// A main-menu mode, decoded from the version-specific numbering (see the mode tables in
+/// [`layout`]). Not every variant exists in every version: `LoadPlayer2Save` and `TutorialMenu`
+/// are PS2-only, `VsLobby` is PSP-only, and `SpecialMoviesMenu` doesn't exist in the original
+/// release.
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub enum MenuMode {
     LoadSaveData(i32),
@@ -241,57 +265,48 @@ pub enum MenuMode {
     OverwriteSaveData,
     NewGameCharacterMenu,
     LoadPlayer2Save,
+    /// The PSP's two-screen ad-hoc VS-mode lobby.
+    VsLobby(i32),
     BattleModeMenu,
     ResultsScreen(i32),
     SaveGame,
     ContinueFromSave,
     SpecialMoviesMenu,
+    /// A transition code briefly visible as the menu mode while a menu hands off to gameplay
+    /// (new game, battle mode, or the teacher intro).
+    StartingGame(i32),
     Unknown(i32),
 }
 
-#[binrw]
-#[derive(Debug, Clone, Zeroable)]
+#[derive(Debug, Clone)]
 pub struct MainMenu {
-    menu_mode: i32,
-    unk04: [u8; 0x44],
+    menu_mode: MenuMode,
+    // Pointer to the new-game character menu. This heads a block of sub-menu pointers (battle
+    // mode, options, save data, results, title, record, ...) whose order varies by version; add
+    // fields here and to [`MainMenuLayout`] as they become useful.
     new_game_character_menu: u32,
-    battle_mode_menu: u32,
-    options_menu: u32,
-    memory_card_menu: u32,
-    results_screen: u32,
-    title_menu: u32,
-    tutorial_menu: u32,
-    record_menu: u32,
-    // Kanzenban additionally has the special movies menu, but for simplicity we won't bother
-    // including that right now
 }
 
 impl MainMenu {
+    fn read(buf: &[u8], layout: &MainMenuLayout) -> Result<Self> {
+        // the raw menu mode is the first field in every version
+        Ok(Self {
+            menu_mode: (layout.menu_mode)(field(buf, 0)?),
+            new_game_character_menu: field(buf, layout.new_game_character_menu)?,
+        })
+    }
+
     pub const fn menu_mode(&self) -> MenuMode {
-        match self.menu_mode {
-            0 | 1 | 2 => MenuMode::LoadSaveData(self.menu_mode),
-            3 => MenuMode::TrailerMovie,
-            4 => MenuMode::TitleMenu,
-            5 => MenuMode::TutorialMenu,
-            6 => MenuMode::OptionsMenu,
-            7 => MenuMode::RecordMenu,
-            8 => MenuMode::OverwriteSaveData,
-            9 => MenuMode::NewGameCharacterMenu,
-            10 => MenuMode::LoadPlayer2Save,
-            11 => MenuMode::BattleModeMenu,
-            12 | 13 => MenuMode::ResultsScreen(self.menu_mode),
-            14 => MenuMode::SaveGame,
-            15 => MenuMode::ContinueFromSave,
-            // FIXME: 16 is SpecialMoviesMenu in Kanzenban but some other unknown value in the
-            //  original release
-            _ => MenuMode::Unknown(self.menu_mode),
-        }
+        self.menu_mode
     }
 }
 
 impl Default for MainMenu {
     fn default() -> Self {
-        Self::zeroed()
+        Self {
+            menu_mode: MenuMode::Unknown(-1),
+            new_game_character_menu: 0,
+        }
     }
 }
 
@@ -318,23 +333,41 @@ impl CharacterMenuMode {
     }
 }
 
-#[binrw]
-#[derive(Debug, Clone, Zeroable)]
+/// The hidden player model selected in the character-creation menu. On PS2 the game only tracks
+/// whether the Manji name cheat is active; the PSP replaced that with a mode covering its three
+/// chord-unlocked secret models.
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum SecretPlayerModel {
+    None,
+    Manji,
+    Suzu, // Suzu replaces Manji on the PSP version
+    Teacher,
+    Robot,
+    Unknown(i32),
+}
+
+#[derive(Debug, Clone)]
 pub struct NewGameCharacterMenu {
-    unk00: [u8; 8],
     active_mode: u32,
-    selected_section: u32, // 0 = Name Entry, 1 = Head Select, 2 = Body Select, 3 = Weapon Select
+    /// 0 = Name Entry, 1 = Head Select, 2 = Body Select, 3 = Weapon Select
+    pub selected_section: u32,
     next_mode: u32,
-    unk14: u32,
-    unk18: [u8; 0x38],
-    player_model_index: i32,
-    unk54: f32,
-    unk58: [u8; 0x14],
-    is_manji: i32,
-    unk70: u32,
+    pub player_model_index: i32,
+    secret_model: SecretPlayerModel,
 }
 
 impl NewGameCharacterMenu {
+    fn read(buf: &[u8], layout: &CharacterMenuLayout) -> Result<Self> {
+        Ok(Self {
+            // the mode/section header sits at the same offsets in every version
+            active_mode: field(buf, 0x8)?,
+            selected_section: field(buf, 0xc)?,
+            next_mode: field(buf, 0x10)?,
+            player_model_index: field(buf, layout.player_model_index)?,
+            secret_model: (layout.decode_secret_model)(field(buf, layout.secret_model)?),
+        })
+    }
+
     pub const fn active_mode(&self) -> CharacterMenuMode {
         CharacterMenuMode::from_raw(self.active_mode)
     }
@@ -343,14 +376,24 @@ impl NewGameCharacterMenu {
         CharacterMenuMode::from_raw(self.next_mode)
     }
 
+    pub const fn secret_model(&self) -> SecretPlayerModel {
+        self.secret_model
+    }
+
     pub const fn is_manji(&self) -> bool {
-        self.is_manji != 0
+        matches!(self.secret_model, SecretPlayerModel::Manji)
     }
 }
 
 impl Default for NewGameCharacterMenu {
     fn default() -> Self {
-        Self::zeroed()
+        Self {
+            active_mode: 0,
+            selected_section: 0,
+            next_mode: 0,
+            player_model_index: 0,
+            secret_model: SecretPlayerModel::None,
+        }
     }
 }
 
@@ -520,81 +563,115 @@ impl Default for CharacterTimeout {
     }
 }
 
-#[binrw]
-#[brw(import(has_extra: bool))]
-#[derive(Debug, Clone, Zeroable)]
+/// An in-scene character. This is the debugger's logical model; per-version field locations live
+/// in [`CharacterLayout`].
+#[derive(Debug, Clone)]
 pub struct Character {
-    unk000: [u8; 0x350], // 000
-    pub position: [f32; 4], // 350
-    unk360: [u8; 0x28], // 360
-    data: u32, // pointer to CharacterData; 388
-    unk38c: [u8; 0x36], // 38c
-    flags: u16, // 0x4 = invincible, 0x20 = pos fix mode; 3c2
-    pub animation_id: Animation, // ID in the low 12 bits, flags in the high bits; 3c4
-    flags2: u32, // 0x2 = stop, 0x4 = blocking, 0x400 = has target character, 0x40000 = dead, 0x4000000 = hi face mode; 3c8
-    unk3cc: u32, // 3cc
-    pub base_max_health: i32, // 3d0
-    unk3d4: [u8; 0x13c], // 3d4
-    pub current_command_id: Command, // 510
-    pub last_command_id: Command, // 514
-    unk518: [u8; 0x20], // 518
-    pub base_health: i16, // 538
-    unk53a: [u8; 10], // 53a
-    held_object: u32, // 544
-    target_character: u32, // 548
-    unk54c: u32, // 54c
-    attacker: u32, // 550
-    unk554: [u8; 12], // 554
-    facing_character: u32, // 560
-    unk564: [u8; 0x10], // 564
-    pub weapons: [WeaponInstance; 3], // 574
-    pub equipped_weapon_index: i16, // 5a4
-    pub num_weapons: i16, // 5a6
-    unk5a8: [u8; 0x38], // 5a8
-    pub lines: [CharacterLine; 4], // 5e0
-    pub line_view_fov_half: f32, // 790
-    pub line_view_range: f32, // 794
-    pub line_view_vertical_range: f32, // 798
-    has_char_joined_view: [i8; NUM_CHARACTERS + 1], // 79c
-    unk804: [u8; 0xc], // 804
-    pub watched_chara_range: f32, // 810
-    pub watched_chara_id: CharacterId, // 814
-    pub watch_type: Watch, // 818
-    unk81c: u32, // 81c
-    pub watched_chara_start_position: [f32; 4], // 820
-    is_drop_watch: i32, // 830
-    pub watched_obj_id: ObjectId, // 834
-    unk838: [u8; 8], // 838
-    pub say_task_id: i32, // 840
-    unk844: [u8; 8], // 844
-    pub say_duration: i16, // 84c
-    pub say_start_delay: i16, // 84e
-    pub listener_chara_id: CharacterId, // 850
-    unk854: [u8; 0xc], // 854
-    // only present in the larger version (e.g. SLPM-74405); shifts everything below by 0x100
-    #[br(if(has_extra, [0u8; 0x100]))]
-    #[bw(if(has_extra))]
-    unk860: [u8; 0x100], // 860
-    pub timeouts: [CharacterTimeout; NUM_CHARACTERS], // 860 / 960 when unk860 present
-    flags3: u64, // 0x20 = watch enabled; b98 / c98
-    pub event_modes: u64, // flags, 1 << EVENT constant; ba0 / ca0
-    unk_event_modes: u64, // ba8 / ca8
-    unkbb0: u32, // bb0 / cb0
-    pub ai_group_id: i32, // bb4 / cb4
-    unkbb8: [u8; 8], // bb8 / cb8
-    pub throw_count: i32, // bc0 / cc0
-    name: [u8; 16], // bc4 / cc4
-    unkbd4: u8, // bd4 / cd4
-    say_dead_flag: i8, // bd5 / cd5
-    unkbd6: [u8; 0x1e], // bd6 / cd6
-    pub ai_mode: AiStatus, // bf4 / cf4
-    pub ai_command: Command, // bf8 / cf8
-    unkbfc: [u8; 0x9c], // bfc / cfc
-    pub special_state: i32, // 1 = death blow, 2 = waiting; c98 / ca8
-    unkc9c: [u8; 0x34], // c9c / cac
+    pub position: [f32; 4],
+    // pointer to this character's CharacterData
+    data: u32,
+    flags: u16, // 0x4 = invincible, 0x20 = pos fix mode
+    /// ID in the low 12 bits, flags in the high bits
+    pub animation_id: Animation,
+    flags2: u32, // 0x2 = stop, 0x4 = blocking, 0x400 = has target character, 0x40000 = dead, 0x4000000 = hi face mode
+    pub base_max_health: i32,
+    pub current_command_id: Command,
+    pub last_command_id: Command,
+    pub base_health: i16,
+    /// Pointer to the object the character is holding, if any.
+    pub held_object: u32,
+    /// Pointer to the [`Character`] this character is targeting, if any.
+    pub target_character: u32,
+    /// Pointer to the [`Character`] that last attacked this character, if any.
+    pub attacker: u32,
+    /// Pointer to the [`Character`] this character is facing, if any.
+    pub facing_character: u32,
+    pub weapons: [WeaponInstance; 3],
+    pub equipped_weapon_index: i16,
+    pub num_weapons: i16,
+    pub lines: [CharacterLine; 4],
+    pub line_view_fov_half: f32,
+    pub line_view_range: f32,
+    pub line_view_vertical_range: f32,
+    /// Per-character flags for whether each character has entered this character's view (indexed
+    /// by `CHID_`).
+    pub has_char_joined_view: [i8; NUM_CHARACTERS + 1],
+    pub watched_chara_range: f32,
+    pub watched_chara_id: CharacterId,
+    pub watch_type: Watch,
+    pub watched_chara_start_position: [f32; 4],
+    is_drop_watch: i32,
+    pub watched_obj_id: ObjectId,
+    pub say_task_id: i32,
+    pub say_duration: i16,
+    pub say_start_delay: i16,
+    pub listener_chara_id: CharacterId,
+    pub timeouts: [CharacterTimeout; NUM_CHARACTERS],
+    flags3: u64, // 0x20 = watch enabled
+    /// flags, 1 << EVENT constant
+    pub event_modes: u64,
+    pub ai_group_id: i32,
+    pub throw_count: i32,
+    /// The character's name as raw bytes in the game's custom text encoding.
+    pub name: [u8; 16],
+    say_dead_flag: i8,
+    pub ai_mode: AiStatus,
+    pub ai_command: Command,
+    /// 1 = death blow, 2 = waiting
+    pub special_state: i32,
 }
 
 impl Character {
+    fn read(buf: &[u8], layout: &CharacterLayout) -> Result<Self> {
+        Ok(Self {
+            position: field(buf, layout.position)?,
+            data: field(buf, layout.data)?,
+            flags: field(buf, layout.flags)?,
+            animation_id: field(buf, layout.animation_id)?,
+            flags2: field(buf, layout.flags2)?,
+            base_max_health: field(buf, layout.base_max_health)?,
+            current_command_id: field(buf, layout.current_command_id)?,
+            last_command_id: field(buf, layout.last_command_id)?,
+            base_health: field(buf, layout.base_health)?,
+            held_object: field(buf, layout.held_object)?,
+            target_character: field(buf, layout.target_character)?,
+            attacker: field(buf, layout.attacker)?,
+            facing_character: field(buf, layout.facing_character)?,
+            weapons: field(buf, layout.weapons)?,
+            equipped_weapon_index: field(buf, layout.equipped_weapon_index)?,
+            num_weapons: field(buf, layout.num_weapons)?,
+            lines: field(buf, layout.lines)?,
+            line_view_fov_half: field(buf, layout.line_view_fov_half)?,
+            line_view_range: field(buf, layout.line_view_range)?,
+            line_view_vertical_range: field(buf, layout.line_view_vertical_range)?,
+            has_char_joined_view: field(buf, layout.has_char_joined_view)?,
+            watched_chara_range: field(buf, layout.watched_chara_range)?,
+            watched_chara_id: field(buf, layout.watched_chara_id)?,
+            watch_type: field(buf, layout.watch_type)?,
+            watched_chara_start_position: field(buf, layout.watched_chara_start_position)?,
+            is_drop_watch: field(buf, layout.is_drop_watch)?,
+            watched_obj_id: field(buf, layout.watched_obj_id)?,
+            say_task_id: field(buf, layout.say_task_id)?,
+            say_duration: field(buf, layout.say_duration)?,
+            say_start_delay: field(buf, layout.say_start_delay)?,
+            listener_chara_id: if layout.byte_listener {
+                CharacterId::new(field::<i8>(buf, layout.listener_chara_id)?.into())
+            } else {
+                field(buf, layout.listener_chara_id)?
+            },
+            timeouts: field(buf, layout.timeouts)?,
+            flags3: flags_field(buf, layout.flags3, layout.wide_flags)?,
+            event_modes: flags_field(buf, layout.event_modes, layout.wide_flags)?,
+            ai_group_id: field(buf, layout.ai_group_id)?,
+            throw_count: field(buf, layout.throw_count)?,
+            name: field(buf, layout.name)?,
+            say_dead_flag: field(buf, layout.say_dead_flag)?,
+            ai_mode: field(buf, layout.ai_mode)?,
+            ai_command: field(buf, layout.ai_command)?,
+            special_state: field(buf, layout.special_state)?,
+        })
+    }
+
     pub const fn is_invincible(&self) -> bool {
         self.flags & 0x4 != 0
     }
@@ -642,12 +719,6 @@ impl Character {
     }
 }
 
-impl Default for Character {
-    fn default() -> Self {
-        Self::zeroed()
-    }
-}
-
 #[derive(Debug, Clone)]
 pub struct GameVersion {
     name: &'static str,
@@ -660,25 +731,13 @@ pub struct GameVersion {
     free_cam_patch_address: usize,
     /// Offset within the engine of the pointer to the [`Camera`].
     camera_pointer_offset: usize,
-    character_size: usize,
-    engine_size: usize,
     game_state_size: usize,
-    /// Whether the character [`LinkedListHead`] is embedded directly in the engine (at the
-    /// `character_list` offset) rather than referenced via a pointer.
-    character_list_embedded: bool,
     has_hard_difficulty: bool,
+    /// Physical layouts of the structures whose shape varies by version.
+    layout: &'static VersionLayout,
 }
 
 impl GameVersion {
-    /// Whether this version includes the extra `unk860` block in `Character`.
-    const fn character_has_extra(&self) -> bool {
-        self.character_size > CHARACTER_BASE_SIZE
-    }
-
-    const fn engine_has_extra(&self) -> bool {
-        self.engine_size >= ENGINE_BASE_SIZE
-    }
-
     const fn game_state_has_extra(&self) -> bool {
         self.game_state_size >= GAME_STATE_BASE_SIZE
     }
@@ -688,7 +747,7 @@ impl GameVersion {
     }
 
     const fn main_menu_address(&self) -> usize {
-        self.engine_address + MAIN_MENU_OFFSET
+        self.engine_address + self.layout.engine.main_menu_pointer
     }
 
     /// Address of the pointer to the [`Camera`] within the engine.
@@ -701,10 +760,9 @@ impl GameVersion {
     /// the engine's `character_list` pointer. In both cases this address also doubles as the
     /// sentinel marking the end of the list.
     fn character_list_head_address(&self, engine: &Engine) -> usize {
-        if self.character_list_embedded {
-            self.engine_address + EMBEDDED_CHARACTER_LIST_OFFSET
-        } else {
-            engine.character_list as usize
+        match self.layout.engine.character_list {
+            CharacterList::Embedded(offset) => self.engine_address + offset,
+            CharacterList::Pointer(_) => engine.character_list as usize,
         }
     }
 
@@ -724,7 +782,7 @@ impl GameVersion {
     }
 }
 
-const GAME_VERSIONS: [GameVersion; 3] = [
+static GAME_VERSIONS: [GameVersion; 3] = [
     GameVersion {
         name: "SLPS-20178",
         console: Console::Ps2,
@@ -735,11 +793,9 @@ const GAME_VERSIONS: [GameVersion; 3] = [
         camera_target_character_address: 0x00225170,
         free_cam_patch_address: 0x0011d370,
         camera_pointer_offset: 0x3c,
-        character_size: CHARACTER_BASE_SIZE,
-        engine_size: ENGINE_BASE_SIZE,
         game_state_size: GAME_STATE_BASE_SIZE,
-        character_list_embedded: true,
         has_hard_difficulty: false,
+        layout: &layout::JP,
     },
     GameVersion {
         name: "SLPM-74405",
@@ -751,11 +807,9 @@ const GAME_VERSIONS: [GameVersion; 3] = [
         camera_target_character_address: 0x0022aef0,
         free_cam_patch_address: 0x0011d120,
         camera_pointer_offset: 0x38,
-        character_size: 0xdd0,
-        engine_size: 0x40,
         game_state_size: GAME_STATE_BASE_SIZE,
-        character_list_embedded: false,
         has_hard_difficulty: true,
+        layout: &layout::KANZENBAN,
     },
     GameVersion {
         name: "ULJS-00155",
@@ -764,11 +818,13 @@ const GAME_VERSIONS: [GameVersion; 3] = [
         game_state_address: 0x08d54b90,
         character_data_address: 0x08d7dd10,
         engine_address: 0x08d43900,
+        // free cam isn't supported on PSP yet; the camera hasn't been mapped
         camera_target_character_address: 0,
+        free_cam_patch_address: 0,
         camera_pointer_offset: 0,
         game_state_size: 0x4ec,
-        character_list_embedded: false,
         has_hard_difficulty: true,
+        layout: &layout::PSP,
     },
 ];
 
@@ -846,12 +902,19 @@ impl Game {
     }
 
     fn read_main_menu(&mut self) -> Result<()> {
+        let layout = self.version.layout;
         let main_menu_ptr: u32 = self.emulator().read(self.version.main_menu_address(), 4)?;
-        self.main_menu = self.emulator().read(main_menu_ptr as usize, MAIN_MENU_SIZE)?;
+        let buf = self
+            .emulator()
+            .read_memory(main_menu_ptr as usize, layout.main_menu.size)?;
+        self.main_menu = MainMenu::read(&buf, &layout.main_menu)?;
         if self.main_menu.menu_mode() == MenuMode::NewGameCharacterMenu {
-            self.new_game_character_menu = self
-                .emulator()
-                .read(self.main_menu.new_game_character_menu as usize, NEW_GAME_CHARACTER_MENU_SIZE)?;
+            let buf = self.emulator().read_memory(
+                self.main_menu.new_game_character_menu as usize,
+                layout.character_menu.size,
+            )?;
+            self.new_game_character_menu =
+                NewGameCharacterMenu::read(&buf, &layout.character_menu)?;
         }
         Ok(())
     }
@@ -873,13 +936,10 @@ impl Game {
             }
         }
 
-        self.engine = self
+        let engine_buf = self
             .emulator()
-            .read_args(
-                self.version.engine_address,
-                self.version.engine_size,
-                (self.version.engine_has_extra(),),
-            )?;
+            .read_memory(self.version.engine_address, self.version.layout.engine.size)?;
+        self.engine = Engine::read(&engine_buf, &self.version.layout.engine)?;
 
         // while free cam is active, keep overwriting the camera with our controlled transform.
         // best-effort: if the camera pointer has gone stale (e.g. a scene change), don't tear the
@@ -940,18 +1000,18 @@ impl Game {
                 }
 
                 let list_end = head_address as u32;
-                let character_size = self.version.character_size;
-                let has_extra = self.version.character_has_extra();
+                let character_layout = &self.version.layout.character;
                 let mut entry: LinkedListEntry = self.emulator().read(list_begin, LINKED_LIST_SIZE)?;
                 for _ in 0..list_head.count {
                     let char_address = entry.object as usize;
-                    if !self.emulator().is_address_valid(char_address, character_size) {
+                    if !self.emulator().is_address_valid(char_address, character_layout.size) {
                         break;
                     }
 
-                    let character: Character =
-                        self.emulator()
-                            .read_args(char_address, character_size, (has_extra,))?;
+                    let buf = self
+                        .emulator()
+                        .read_memory(char_address, character_layout.size)?;
+                    let character = Character::read(&buf, character_layout)?;
                     // sanity check: the character's data pointer should be in the range of the character data
                     if character.data < char_data_start || character.data >= char_data_end {
                         break;
@@ -992,14 +1052,15 @@ impl Game {
     /// memory on demand, so it works even when character data is skipped on update.
     pub fn camera_target_character_id(&self) -> Result<Option<usize>> {
         let emulator = self.emulator();
+        let data_pointer_offset = self.version.layout.character.data;
         let target =
             emulator.read::<u32>(self.version.camera_target_character_address, 4)? as usize;
-        if !emulator.is_address_valid(target, CHARACTER_DATA_POINTER_OFFSET + 4) {
+        if !emulator.is_address_valid(target, data_pointer_offset + 4) {
             return Ok(None);
         }
 
         // identify the character by which CharacterData record its data pointer refers to
-        let data = emulator.read::<u32>(target + CHARACTER_DATA_POINTER_OFFSET, 4)? as usize;
+        let data = emulator.read::<u32>(target + data_pointer_offset, 4)? as usize;
         let offset = match data.checked_sub(self.version.character_data_address) {
             Some(offset) if offset % CHARACTER_DATA_SIZE == 0 => offset,
             _ => return Ok(None),
@@ -1024,6 +1085,10 @@ impl Game {
 
     pub fn new_game_character_menu(&self) -> Option<&NewGameCharacterMenu> {
         (self.engine.mode() == EngineMode::MainMenu && self.main_menu.menu_mode() == MenuMode::NewGameCharacterMenu).then(|| &self.new_game_character_menu)
+    }
+    
+    pub const fn supports_free_cam(&self) -> bool {
+        self.version.supports_free_cam()
     }
 
     /// Whether free camera mode is currently active.
@@ -1120,6 +1185,87 @@ impl Drop for Game {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Write little-endian `bytes` into `buf` at `offset`.
+    fn put(buf: &mut [u8], offset: usize, bytes: &[u8]) {
+        buf[offset..offset + bytes.len()].copy_from_slice(bytes);
+    }
+
+    /// Every layout's fields must decode from within its declared size; a field at or crossing
+    /// the end of a zeroed buffer of `size` bytes fails with an EOF parse error.
+    #[test]
+    fn layouts_fit_declared_sizes() {
+        for version in [&layout::JP, &layout::KANZENBAN, &layout::PSP] {
+            Engine::read(&vec![0; version.engine.size], &version.engine)
+                .expect("zeroed engine should decode");
+            MainMenu::read(&vec![0; version.main_menu.size], &version.main_menu)
+                .expect("zeroed main menu should decode");
+            NewGameCharacterMenu::read(
+                &vec![0; version.character_menu.size],
+                &version.character_menu,
+            )
+            .expect("zeroed character menu should decode");
+            Character::read(&vec![0; version.character.size], &version.character)
+                .expect("zeroed character should decode");
+        }
+    }
+
+    #[test]
+    fn ps2_character_fields_decode_from_their_offsets() {
+        // kanzenban; jp differs only in the 0x100 shift of the fields from timeouts on
+        let layout = &layout::KANZENBAN.character;
+        let mut buf = vec![0; layout.size];
+        put(&mut buf, 0x350, &42.0f32.to_le_bytes()); // position.x
+        put(&mut buf, 0x3c8, &0x40000u32.to_le_bytes()); // flags2: dead
+        put(&mut buf, 0x538, &0x1234u16.to_le_bytes()); // base_health
+        put(&mut buf, 0x850, &9i32.to_le_bytes()); // listener_chara_id (i32 on PS2)
+        put(&mut buf, 0xc98, &0x20u64.to_le_bytes()); // flags3 (u64 on PS2): watch enabled
+        put(&mut buf, 0xca0, &0x120u64.to_le_bytes()); // event_modes
+        put(&mut buf, 0xd98, &1i32.to_le_bytes()); // special_state
+
+        let chara = Character::read(&buf, layout).unwrap();
+        assert_eq!(chara.position[0], 42.0);
+        assert!(chara.is_dead());
+        assert_eq!(chara.base_health, 0x1234);
+        assert_eq!(chara.listener_chara_id.value(), 9);
+        assert!(chara.is_watch_enabled());
+        assert_eq!(chara.event_modes, 0x120);
+        assert_eq!(chara.special_state, 1);
+    }
+
+    #[test]
+    fn psp_character_fields_decode_from_their_moved_offsets() {
+        let layout = &layout::PSP.character;
+        let mut buf = vec![0; layout.size];
+        put(&mut buf, 0x4d0, &42.0f32.to_le_bytes()); // position.x
+        put(&mut buf, 0x53c, &0x40000u32.to_le_bytes()); // flags2: dead
+        put(&mut buf, 0x6a8, &0x1234u16.to_le_bytes()); // base_health
+        put(&mut buf, 0x9c0, &[7]); // listener_chara_id (a single byte on PSP)
+        put(&mut buf, 0xe08, &0x20u32.to_le_bytes()); // flags3 (u32 on PSP): watch enabled
+        put(&mut buf, 0xe0c, &0x120u32.to_le_bytes()); // event_modes
+        put(&mut buf, 0xef8, &1i32.to_le_bytes()); // special_state
+
+        let chara = Character::read(&buf, layout).unwrap();
+        assert_eq!(chara.position[0], 42.0);
+        assert!(chara.is_dead());
+        assert_eq!(chara.base_health, 0x1234);
+        assert_eq!(chara.listener_chara_id.value(), 7);
+        assert!(chara.is_watch_enabled());
+        assert_eq!(chara.event_modes, 0x120);
+        assert_eq!(chara.special_state, 1);
+    }
+
+    #[test]
+    fn psp_engine_fields_decode_from_their_moved_offsets() {
+        let layout = &layout::PSP.engine;
+        let mut buf = vec![0; layout.size];
+        put(&mut buf, 0x28, &7i32.to_le_bytes()); // mode: MainMenu
+        put(&mut buf, 0x5c, &1000u32.to_le_bytes()); // frame_counter
+
+        let engine = Engine::read(&buf, layout).unwrap();
+        assert_eq!(engine.mode(), EngineMode::MainMenu);
+        assert_eq!(engine.frame_counter, 1000);
+    }
 
     /// A free camera at the origin looking down +z with +y up.
     fn test_free_cam() -> FreeCam {

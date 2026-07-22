@@ -9,6 +9,7 @@ mod emulator;
 use emulator::*;
 mod game;
 pub use game::*;
+mod layout;
 mod platform;
 use platform::*;
 

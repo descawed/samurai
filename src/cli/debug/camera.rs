@@ -16,8 +16,8 @@ fn vector_row<'a>(label: &'static str, v: [f32; 3]) -> Line<'a> {
 }
 
 pub fn render(frame: &mut Frame, area: Rect, game: &Game, focused: bool) {
-    let lines = match game.free_cam() {
-        Some(camera) => vec![
+    let lines = match (game.supports_free_cam(), game.free_cam()) {
+        (_, Some(camera)) => vec![
             Line::from(Span::styled(
                 "ON",
                 Style::new().fg(Color::Green).add_modifier(Modifier::BOLD),
@@ -28,11 +28,14 @@ pub fn render(frame: &mut Frame, area: Rect, game: &Game, focused: bool) {
             Line::from("WASD: move   QE: down/up").style(Style::new().add_modifier(Modifier::DIM)),
             Line::from("arrows: look   Shift: fast").style(Style::new().add_modifier(Modifier::DIM)),
         ],
-        None => vec![
+        (true, None) => vec![
             Line::from(Span::styled("OFF", Style::new().add_modifier(Modifier::DIM))),
             Line::from(""),
             Line::from("press f to enable free camera")
                 .style(Style::new().add_modifier(Modifier::DIM)),
+        ],
+        (false, None) => vec![
+            Line::from(Span::styled("Not supported on this version", Style::new().add_modifier(Modifier::DIM))),
         ],
     };
 
